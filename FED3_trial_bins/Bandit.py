@@ -81,6 +81,64 @@ def validate_time(t):
     except:
         return False
 
+def clean_metadata_table(metadata):
+    """Trim metadata headings and text values without changing their case."""
+    cleaned = metadata.copy()
+    cleaned.columns = [
+        value.strip() if isinstance(value, str) else value
+        for value in cleaned.columns
+    ]
+    return cleaned.apply(
+        lambda column: column.map(
+            lambda value: value.strip()
+            if isinstance(value, str)
+            else value
+        )
+    )
+
+
+def sort_metadata_for_wide_tables(
+    metadata,
+    mouse_col,
+    metadata_columns,
+):
+    """Sort by user metadata fields, then naturally by mouse identifier."""
+    sortable = metadata.copy()
+    sort_columns = []
+
+    for position, column in enumerate(metadata_columns):
+        if column not in sortable.columns or column == mouse_col:
+            continue
+        helper = f"__metadata_sort_{position}"
+        sortable[helper] = sortable[column].map(
+            lambda value: "\uffff"
+            if pd.isna(value)
+            else str(value).strip().casefold()
+        )
+        sort_columns.append(helper)
+
+    sortable["__mouse_numeric"] = pd.to_numeric(
+        sortable[mouse_col],
+        errors="coerce",
+    )
+    sortable["__mouse_text"] = sortable[mouse_col].map(
+        lambda value: "\uffff"
+        if pd.isna(value)
+        else str(value).strip().casefold()
+    )
+    sort_columns.extend(["__mouse_numeric", "__mouse_text"])
+
+    return (
+        sortable
+        .sort_values(
+            sort_columns,
+            kind="stable",
+            na_position="last",
+        )
+        .drop(columns=sort_columns)
+    )
+
+
 def parse_timestamps(series):
     cleaned = (
         series
@@ -1745,9 +1803,7 @@ def run_gui():
             root.destroy()
             return
 
-        metadata_df = metadata_df.apply(
-            lambda col: col.map(lambda x: x.strip() if isinstance(x, str) else x)
-        )
+        metadata_df = clean_metadata_table(metadata_df)
 
     else:
         meta_window = tk.Toplevel()
@@ -1823,11 +1879,7 @@ def run_gui():
                 })
 
             global metadata_df
-            metadata_df = pd.DataFrame(data)
-
-            metadata_df = metadata_df.apply(
-                lambda col: col.map(lambda x: x.strip() if isinstance(x, str) else x)
-            )
+            metadata_df = clean_metadata_table(pd.DataFrame(data))
 
             metadata_df.to_excel(os.path.join(save_folder, "Bandit_Metadata.xlsx"), index=False)
 
@@ -2383,14 +2435,12 @@ def run_gui():
         print("PCA not performed (no features selected or insufficient data)")
 
     metadata_sorted = metadata_df.copy()
-
     metadata_sorted[mouse_col] = metadata_sorted[mouse_col].astype(str)
-
-    metadata_sorted["Mouse_ID_numeric"] = pd.to_numeric(metadata_sorted[mouse_col], errors="coerce")
-
-    metadata_sorted = metadata_sorted.sort_values(
-        by=[group_col, sex_col, "Mouse_ID_numeric", mouse_col]
-    ).drop(columns=["Mouse_ID_numeric"]).reset_index(drop=True)
+    metadata_sorted = sort_metadata_for_wide_tables(
+        metadata_sorted,
+        mouse_col,
+        [sex_col, group_col],
+    ).reset_index(drop=True)
 
     ordered_mice = metadata_sorted[mouse_col].tolist()
 
