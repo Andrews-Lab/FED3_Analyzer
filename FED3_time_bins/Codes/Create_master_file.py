@@ -443,7 +443,15 @@ def create_multitime_master_file(master1, inputs):
     # File to export as Master_Bandit_{file}.xlsx or Master_ClosedEcon_{file}.xlsx.
     for file in keep_files:
         master2 = organise_table2(master1[file], file, inputs)
-        export_multitime(master2, inputs, file)
+
+        # Keep block-duration summaries in the plotting data, but omit them
+        # from the separate ClosedEcon and Bandit comparison workbooks.
+        export_master = master2.copy()
+        if inputs["Session Type"] in ["ClosedEcon_PR1", "Bandit"]:
+            export_master.pop("Average block duration (mins)", None)
+            export_master.pop("Sum of block durations (mins)", None)
+
+        export_multitime(export_master, inputs, file)
         plot_tables["Metric files"][file] = master2
 
     return(plot_tables)
