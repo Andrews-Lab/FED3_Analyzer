@@ -1,93 +1,254 @@
 import os
 from datetime import datetime
 import matplotlib.pyplot as plt
+from matplotlib.colors import ListedColormap
+from matplotlib.patches import Patch
 import numpy as np
 import pandas as pd
 import seaborn as sns
 import tkinter as tk
-from tkinter import colorchooser
-from tkinter import filedialog, messagebox
-from tkinter.simpledialog import askstring
+from tkinter import colorchooser, filedialog, messagebox
+from tkinter.simpledialog import askinteger, askstring
+from sklearn.decomposition import PCA
+from sklearn.preprocessing import StandardScaler
+
 
 sns.set_theme(style="white", font_scale=1.2)
 
-
 # ------------------------------------------------------------
-# PLOT CONSTANTS
+# STOPSIG EVENT DEFINITIONS AND CONSTANTS
 # ------------------------------------------------------------
+START_EVENTS = {
+    ">Left_Regular_trial": "Regular",
+    ">Left_Stop_trial": "Stop",
+}
 
-PLOT_LINEWIDTH = 2.5
-
-PLOT_SEM_ALPHA = 0.18
-
-DEMAND_MARKERSIZE = 3.5
-
-STRIPPLOT_SIZE = 7
+TERMINAL_EVENTS = {
+    "Right_Regular_(correct)": {
+        "TrialType": "Regular",
+        "ResponseType": "RightPoke",
+        "Outcome": "RegularCorrect",
+        "Correct": 1,
+    },
+    "NoPoke_Regular_(incorrect)": {
+        "TrialType": "Regular",
+        "ResponseType": "Withhold",
+        "Outcome": "RegularIncorrect",
+        "Correct": 0,
+    },
+    "NoPoke_STOP_(correct)": {
+        "TrialType": "Stop",
+        "ResponseType": "Withhold",
+        "Outcome": "StopCorrect",
+        "Correct": 1,
+    },
+    "Right_STOP_(incorrect)": {
+        "TrialType": "Stop",
+        "ResponseType": "RightPoke",
+        "Outcome": "StopIncorrect",
+        "Correct": 0,
+    },
+}
 
 REQUIRED_COLUMNS = {
     "MM:DD:YYYY hh:mm:ss",
     "Event",
-    "FR",
     "Left_Poke_Count",
     "Right_Poke_Count",
     "Pellet_Count",
-    "Block_Pellet_Count",
 }
 
-# Runtime context used by legacy-compatible output and plotting helpers.
-active_side_input = None
-include_incomplete = False
-use_phase = False
-light_start = "07:00"
-light_end = "19:00"
-metadata_df = pd.DataFrame()
-metadata_cols_left = []
-mouse_col = None
-sex_col = None
-group_col = None
-summary_df = pd.DataFrame()
-trials_all_df = pd.DataFrame()
-demand_df = pd.DataFrame()
-ordered_mice = []
-plots_folder = None
-group_colors = {}
-sex_colors = {}
-show_plots = False
-save_individual_timecourse_plots = False
+DEFAULT_REGULAR_OMISSION_TIMEOUT_S = 30
+DEFAULT_STOP_ERROR_NOISE_S = 2
+DEFAULT_STOP_ERROR_TIMEOUT_S = 90
+DEFAULT_STOP_SIGNAL_DELAY_MS = 300
+DEFAULT_RESPONSE_WINDOW_S = 4
+
+SUMMARY_METRICS = [
+    "CompletedTrials",
+    "IncompleteTrials",
+    "RegularTrials",
+    "StopTrials",
+    "OverallAccuracy",
+    "RegularAccuracy",
+    "StopAccuracy",
+    "BalancedAccuracy",
+    "PelletsConfirmed",
+    "RewardMismatches",
+    "MeanRegularCorrectRT_s",
+    "MeanStopFailureRT_s",
+    "MeanCorrectWithhold_s",
+    "MeanInterTrialInterval_s",
+    "MeanAvailableInitiationLatency_s",
+    "PostErrorSlowing_s",
+    "PostStopRegularAccuracyChange",
+    "PostStopRegularRTChange_s",
+    "PostStopErrorAccuracyChange",
+    "PostStopErrorRTChange_s",
+    "Regular LRP count",
+    "Regular LN count",
+    "Stop LNP count",
+    "Stop LR count",
+    "Regular LRP latency RP avg (secs)",
+    "Stop LNP latency NP avg (secs)",
+    "Regular LRP/total trials (%)",
+    "Regular LN/total trials (%)",
+    "Regular trials/total trials (%)",
+    "Stop LNP/total trials (%)",
+    "Stop LR/total trials (%)",
+    "Stop trials/total trials (%)",
+    "LRP/total pellets (%)",
+    "LNP/total pellets (%)",
+    "RightNoLeftEvents",
+    "LeftTimeoutEvents",
+    "RightTimeoutEvents",
+    "SessionDuration_h",
+]
+
+PCA_FEATURES = [
+    "RegularAccuracy",
+    "StopAccuracy",
+    "MeanRegularCorrectRT_s",
+    "MeanStopFailureRT_s",
+    "MeanAvailableInitiationLatency_s",
+    "PostErrorSlowing_s",
+    "PostStopRegularAccuracyChange",
+    "PostStopRegularRTChange_s",
+    "PostStopErrorAccuracyChange",
+    "PostStopErrorRTChange_s",
+]
+
+SUMMARY_DISPLAY_NAMES = {
+    "TotalTrials": "Trial Starts",
+    "CompletedTrials": "Total Trials",
+    "IncompleteTrials": "Incomplete Trials",
+    "RegularTrials": "Regular Trials",
+    "StopTrials": "Stop Trials",
+    "StopTrialPercent": "Stop trials/total trials (%)",
+    "OverallAccuracy": "Overall Accuracy (%)",
+    "RegularAccuracy": "Regular LRP/total regular (%)",
+    "RegularOmissionRate": "Regular LN/total regular (%)",
+    "StopAccuracy": "Stop LNP/total stop (%)",
+    "StopFailureRate": "Stop LR/total stop (%)",
+    "BalancedAccuracy": "Balanced Accuracy (%)",
+    "PelletsConfirmed": "Pellet count",
+    "RewardMismatches": "Reward Mismatches",
+    "TrialTypeMismatches": "Trial Type Mismatches",
+    "MultipleTerminalTrials": "Multiple Terminal Trials",
+    "MeanRegularCorrectRT_s": "Regular LRP L to R latency avg (secs)",
+    "MedianRegularCorrectRT_s": "Regular LRP L to R latency median (secs)",
+    "MeanStopFailureRT_s": "Stop LR L to R latency avg (secs)",
+    "MedianStopFailureRT_s": "Stop LR L to R latency median (secs)",
+    "MeanCorrectWithhold_s": "Stop LNP L to N latency avg (secs)",
+    "Regular LRP latency LR sum (secs)": "Regular LRP L to R latency sum (secs)",
+    "Regular LRP latency LR avg (secs)": "Regular LRP L to R latency avg (secs)",
+    "Regular LRP latency RP sum (secs)": "Regular LRP R to P latency sum (secs)",
+    "Regular LRP latency RP avg (secs)": "Regular LRP R to P latency avg (secs)",
+    "Stop LNP latency NP sum (secs)": "Stop LNP N to P latency sum (secs)",
+    "Stop LNP latency NP avg (secs)": "Stop LNP N to P latency avg (secs)",
+    "Stop LR latency LR sum (secs)": "Stop LR L to R latency sum (secs)",
+    "Stop LR latency LR avg (secs)": "Stop LR L to R latency avg (secs)",
+    "MeanInterTrialInterval_s": "Intertrial interval avg (secs)",
+    "MedianInterTrialInterval_s": "Intertrial interval median (secs)",
+    "MeanAvailableInitiationLatency_s": "Next-Trial Initiation Latency avg (secs)",
+    "MedianAvailableInitiationLatency_s": "Next-Trial Initiation Latency median (secs)",
+    "PostErrorSlowing_s": "Post-error Regular LRP L to R slowing (secs)",
+    "PostStopRegularAccuracyChange": "Post-Stop Regular accuracy change (%)",
+    "PostStopRegularRTChange_s": "Post-Stop Regular LRP L to R latency change (secs)",
+    "PostStopErrorAccuracyChange": "Post-Stop-error accuracy change (%)",
+    "PostStopErrorRTChange_s": "Post-Stop-error Regular LRP L to R latency change (secs)",
+    "PostStopInitiationChange_s": "Post-Stop Next-Trial Initiation Latency change (secs)",
+    "PostStopErrorInitiationChange_s": "Post-Stop-error Next-Trial Initiation Latency change (secs)",
+    "RightNoLeftEvents": "Right_no_left count",
+    "LeftTimeoutEvents": "LeftinTimeOut count",
+    "RightTimeoutEvents": "RightinTimeout count",
+    "SessionDuration_h": "Session duration (hours)",
+}
 
 
 # ------------------------------------------------------------
 # GENERAL INPUT AND TIME HELPERS
 # ------------------------------------------------------------
-
-def clean_time_input(t):
-    if t is None:
+def clean_time_input(value):
+    if value is None:
         return None
 
-    t = str(t).strip()
+    value = str(value).strip()
+    if value.isdigit():
+        return f"{int(value):02d}:00"
 
-    # Handle lazy inputs like "9" or "21"
-    if t.isdigit():
-        return f"{int(t):02d}:00"
-
-    # Handle "9:0" to "09:00"
     try:
-        parts = t.split(":")
-        if len(parts) == 2:
-            h = int(parts[0])
-            m = int(parts[1])
-            return f"{h:02d}:{m:02d}"
-    except:
-        pass
+        hour, minute = value.split(":")
+        return f"{int(hour):02d}:{int(minute):02d}"
+    except (TypeError, ValueError):
+        return value
 
-    return t
 
-def validate_time(t):
+def validate_time(value):
     try:
-        datetime.strptime(t, "%H:%M")
+        datetime.strptime(value, "%H:%M")
         return True
-    except:
+    except (TypeError, ValueError):
         return False
+
+
+def clean_metadata_table(metadata):
+    """Trim metadata headings and text values without changing their case."""
+    cleaned = metadata.copy()
+    cleaned.columns = [
+        value.strip() if isinstance(value, str) else value
+        for value in cleaned.columns
+    ]
+    return cleaned.apply(
+        lambda column: column.map(
+            lambda value: value.strip()
+            if isinstance(value, str)
+            else value
+        )
+    )
+
+
+def sort_metadata_for_wide_tables(
+    metadata,
+    mouse_col,
+    metadata_columns,
+):
+    """Sort by user metadata fields, then naturally by mouse identifier."""
+    sortable = metadata.copy()
+    sort_columns = []
+
+    for position, column in enumerate(metadata_columns):
+        if column not in sortable.columns or column == mouse_col:
+            continue
+        helper = f"__metadata_sort_{position}"
+        sortable[helper] = sortable[column].map(
+            lambda value: "\uffff"
+            if pd.isna(value)
+            else str(value).strip().casefold()
+        )
+        sort_columns.append(helper)
+
+    sortable["__mouse_numeric"] = pd.to_numeric(
+        sortable[mouse_col],
+        errors="coerce",
+    )
+    sortable["__mouse_text"] = sortable[mouse_col].map(
+        lambda value: "\uffff"
+        if pd.isna(value)
+        else str(value).strip().casefold()
+    )
+    sort_columns.extend(["__mouse_numeric", "__mouse_text"])
+
+    return (
+        sortable
+        .sort_values(
+            sort_columns,
+            kind="stable",
+            na_position="last",
+        )
+        .drop(columns=sort_columns)
+    )
+
 
 def parse_timestamps(series):
     cleaned = (
@@ -170,214 +331,139 @@ def validate_parsed_timestamps(raw_series, parsed_series, require_valid=False):
             "Check the 'MM:DD:YYYY hh:mm:ss' column."
         )
 
-def identify_phase(timestamp, start, end):
-    t = timestamp.time()
 
-    if start < end:
-        return "Light" if (t >= start and t < end) else "Dark"
-    else:
-        return "Light" if (t >= start or t < end) else "Dark"
+def identify_phase(timestamp, light_start_time, light_end_time):
+    if pd.isna(timestamp):
+        return np.nan
 
-
-# ------------------------------------------------------------
-# TRIAL RECONSTRUCTION
-# ------------------------------------------------------------
-
-def resolve_active_side(df, active_side_input):
-
-    if active_side_input in ["left", "right"]:
-        return active_side_input.capitalize()
-
-    if "Active_Poke" in df.columns:
-        active_values = (
-            df["Active_Poke"]
-            .dropna()
-            .astype(str)
-            .str.strip()
-            .str.capitalize()
+    current = timestamp.time()
+    if light_start_time < light_end_time:
+        return (
+            "Light"
+            if light_start_time <= current < light_end_time
+            else "Dark"
         )
 
-        active_values = active_values[
-            active_values.isin(["Left", "Right"])
+    return (
+        "Light"
+        if current >= light_start_time or current < light_end_time
+        else "Dark"
+    )
+
+
+def safe_percent(numerator, denominator):
+    if denominator is None or pd.isna(denominator) or denominator <= 0:
+        return np.nan
+    return (numerator / denominator) * 100
+
+
+# ------------------------------------------------------------
+# METADATA INPUT GUI
+# ------------------------------------------------------------
+def collect_metadata(root, file_map, save_folder):
+    use_existing = messagebox.askyesno(
+        "Metadata",
+        "Do you have an existing metadata file?\n\n"
+        "Do not delete or leave any metadata header titles blank."
+    )
+
+    if use_existing:
+        metadata_path = filedialog.askopenfilename(
+            title="Select Metadata File",
+            filetypes=[("Excel files", "*.xlsx")],
+        )
+        if not metadata_path:
+            return None
+        metadata_df = pd.read_excel(metadata_path)
+        return clean_metadata_table(metadata_df)
+
+    window = tk.Toplevel(root)
+    window.title("Enter StopSig Metadata")
+    window.geometry("760x520")
+
+    tk.Label(
+        window,
+        text=("Keep all metadata header titles present and unique. "
+              "Individual metadata values may be left blank."),
+        fg="dark red"
+    ).pack(fill="x", padx=8, pady=(6, 2))
+
+    canvas = tk.Canvas(window)
+    scrollbar = tk.Scrollbar(window, orient="vertical", command=canvas.yview)
+    frame = tk.Frame(canvas)
+    frame.bind(
+        "<Configure>",
+        lambda event: canvas.configure(scrollregion=canvas.bbox("all")),
+    )
+    canvas.create_window((0, 0), window=frame, anchor="nw")
+    canvas.configure(yscrollcommand=scrollbar.set)
+    canvas.pack(side="left", fill="both", expand=True)
+    scrollbar.pack(side="right", fill="y")
+
+    headers = ["Filename", "Mouse ID", "Sex", "Genotype"]
+    header_entries = {}
+    for column_number, header in enumerate(headers):
+        if header == "Filename":
+            tk.Label(
+                frame, text=header, font=("Arial", 10, "bold")
+            ).grid(row=0, column=column_number)
+        else:
+            entry = tk.Entry(frame)
+            entry.insert(0, header)
+            entry.grid(row=0, column=column_number)
+            header_entries[column_number] = entry
+
+    rows = []
+    for row_number, filename in enumerate(file_map, start=1):
+        tk.Label(frame, text=filename).grid(row=row_number, column=0)
+        entries = [tk.Entry(frame) for _ in range(3)]
+        for column_number, entry in enumerate(entries, start=1):
+            entry.grid(row=row_number, column=column_number)
+        rows.append((filename, entries))
+
+    result = {"data": None}
+
+    def collect():
+        column_names = [
+            header_entries[index].get().strip()
+            for index in [1, 2, 3]
         ]
-
-        if active_values.nunique() == 1:
-            return active_values.iloc[0]
-
-    return None
-
-def summarize_interval(
-    trial_df,
-    pellet_row,
-    trial_num,
-    completed,
-    active_side,
-    phase_start,
-    phase_end,
-    use_phase,
-):
-
-    start_time = trial_df["Timestamp"].iloc[0]
-    end_time = trial_df["Timestamp"].iloc[-1]
-
-    left_start = trial_df["Left_Poke_Count"].iloc[0]
-    left_end = trial_df["Left_Poke_Count"].iloc[-1]
-    right_start = trial_df["Right_Poke_Count"].iloc[0]
-    right_end = trial_df["Right_Poke_Count"].iloc[-1]
-
-    left_pokes = left_end - left_start
-    right_pokes = right_end - right_start
-
-    # If the first row in the interval is itself a poke, the cumulative count
-    # already includes that poke. Add it back so pellet intervals count all work
-    # from immediately after the previous pellet through the current pellet.
-    first_side = trial_df["PokeSide"].iloc[0] if "PokeSide" in trial_df.columns else pd.NA
-
-    if first_side == "Left":
-        left_pokes = left_pokes + 1
-    elif first_side == "Right":
-        right_pokes = right_pokes + 1
-
-    left_pokes = max(left_pokes, 0) if not pd.isna(left_pokes) else np.nan
-    right_pokes = max(right_pokes, 0) if not pd.isna(right_pokes) else np.nan
-
-    if active_side == "Left":
-        active_pokes = left_pokes
-        inactive_pokes = right_pokes
-    else:
-        active_pokes = right_pokes
-        inactive_pokes = left_pokes
-
-    total_pokes = active_pokes + inactive_pokes
-
-    accuracy = (
-        (active_pokes / total_pokes) * 100
-        if total_pokes > 0 and not pd.isna(active_pokes)
-        else np.nan
-    )
-
-    duration_s = (end_time - start_time).total_seconds()
-    duration_min = duration_s / 60 if duration_s >= 0 else np.nan
-
-    vigor = (
-        active_pokes / duration_min
-        if duration_min > 0 and not pd.isna(active_pokes)
-        else np.nan
-    )
-
-    total_poke_rate = (
-        total_pokes / duration_min
-        if duration_min > 0 and not pd.isna(total_pokes)
-        else np.nan
-    )
-
-    inactive_poke_rate = (
-        inactive_pokes / duration_min
-        if duration_min > 0 and not pd.isna(inactive_pokes)
-        else np.nan
-    )
-
-    inactive_poke_percent = (
-        (inactive_pokes / total_pokes) * 100
-        if total_pokes > 0 and not pd.isna(inactive_pokes)
-        else np.nan
-    )
-
-    if pellet_row is not None:
-        fr = pellet_row.get("FR", np.nan)
-        block = pellet_row.get("Block", np.nan)
-        block_pellet_count = pellet_row.get("Block_Pellet_Count", np.nan)
-        active_poke_side = pellet_row.get("Active_Poke", np.nan)
-        retrieval_time = pellet_row.get("Retrieval_Time", np.nan)
-        interpellet_interval = pellet_row.get("InterPelletInterval", np.nan)
-        pellet_count = pellet_row.get("Pellet_Count", np.nan)
-    else:
-        fr = trial_df["FR"].dropna().iloc[-1] if trial_df["FR"].notna().any() else np.nan
-        block = trial_df["Block"].iloc[-1]
-        block_pellet_count = trial_df["Block_Pellet_Count"].iloc[-1]
-        active_poke_side = (
-            trial_df["Active_Poke"].dropna().iloc[-1]
-            if "Active_Poke" in trial_df.columns and trial_df["Active_Poke"].notna().any()
-            else np.nan
+        data = []
+        for filename, entries in rows:
+            data.append({
+                "Filename": filename,
+                column_names[0]: entries[0].get(),
+                column_names[1]: entries[1].get(),
+                column_names[2]: entries[2].get(),
+            })
+        result["data"] = clean_metadata_table(pd.DataFrame(data))
+        result["data"].to_excel(
+            os.path.join(save_folder, "StopSig_Metadata.xlsx"),
+            index=False,
         )
-        retrieval_time = np.nan
-        interpellet_interval = np.nan
-        pellet_count = trial_df["Pellet_Count"].iloc[-1]
+        window.destroy()
 
-    pokes_per_pellet = total_pokes if completed == 1 else np.nan
-    active_pokes_per_pellet = active_pokes if completed == 1 else np.nan
+    tk.Button(frame, text="Continue", command=collect).grid(
+        row=len(rows) + 2, column=0, columnspan=4
+    )
+    root.wait_window(window)
+    return result["data"]
 
-    if use_phase:
-        start_phase = identify_phase(start_time, phase_start, phase_end)
-        end_phase = identify_phase(end_time, phase_start, phase_end)
-        phase_crossing = start_phase != end_phase
-        phase = end_phase
-    else:
-        start_phase = "All"
-        end_phase = "All"
-        phase_crossing = False
-        phase = "All"
 
-    return {
-        "Trial": trial_num,
-        "Block": block,
-        "Completed": completed,
-        "Phase": phase,
-        "StartPhase": start_phase,
-        "EndPhase": end_phase,
-        "PhaseCrossing": phase_crossing,
-        "StartTime": start_time,
-        "EndTime": end_time,
-        "Duration_s": duration_s,
-        "Duration_min": duration_min,
-        "FR": fr,
-        "ActivePokeSide": active_side,
-        "RawActivePokeSide": active_poke_side,
-        "LeftPokes": left_pokes,
-        "RightPokes": right_pokes,
-        "ActivePokes": active_pokes,
-        "InactivePokes": inactive_pokes,
-        "TotalPokes": total_pokes,
-        "Accuracy": accuracy,
-        "InactivePokePercent": inactive_poke_percent,
-        "Vigor": vigor,
-        "TotalPokeRate": total_poke_rate,
-        "InactivePokeRate": inactive_poke_rate,
-        "PokesPerPellet": pokes_per_pellet,
-        "ActivePokesPerPellet": active_pokes_per_pellet,
-        "RetrievalTime": retrieval_time,
-        "InterPelletInterval": interpellet_interval,
-        "Pellet_Count": pellet_count,
-        "Block_Pellet_Count": block_pellet_count
-    }
 
-def build_trials(
-    df,
-    active_side_input,
-    include_incomplete,
-    use_phase,
-    light_start="07:00",
-    light_end="19:00",
-):
 
-    df = df.copy()
-    missing = sorted(REQUIRED_COLUMNS.difference(df.columns))
+# ------------------------------------------------------------
+# RAW FED3 DATA CLEANING
+# ------------------------------------------------------------
+def clean_raw_data(raw_df):
+    missing = sorted(REQUIRED_COLUMNS.difference(raw_df.columns))
     if missing:
         raise ValueError(
-            "Missing required ClosedEcon PR1 columns: " + ", ".join(missing)
+            "Missing required StopSig columns: " + ", ".join(missing)
         )
 
-    active_side = resolve_active_side(df, active_side_input)
-
-    if active_side is None:
-        raise ValueError(
-            "Active side could not be determined. Enter Left or Right "
-            "instead of Auto, or provide a consistent Active_Poke column."
-        )
-
-    # -------------------------
-    # TIMESTAMP HANDLING
-    # -------------------------
+    df = raw_df.copy()
+    df["RawCSVRow"] = np.arange(2, len(df) + 2)
     raw_timestamps = df["MM:DD:YYYY hh:mm:ss"].copy()
     df["Timestamp"] = parse_timestamps(raw_timestamps)
     validate_parsed_timestamps(
@@ -385,15 +471,9 @@ def build_trials(
         df["Timestamp"],
         require_valid=True,
     )
+    df["Event_clean"] = df["Event"].astype(str).str.strip()
 
-    df = df.dropna(subset=["Timestamp"]).copy()
-    df = df.reset_index(drop=True)
-
-    # -------------------------
-    # CLEAN COLUMNS
-    # -------------------------
-    numeric_cols = [
-        "FR",
+    numeric_columns = [
         "Left_Poke_Count",
         "Right_Poke_Count",
         "Pellet_Count",
@@ -401,2653 +481,2911 @@ def build_trials(
         "Retrieval_Time",
         "InterPelletInterval",
         "Poke_Time",
-        "Correct_Poke",
-        "Binary_Left_Pokes",
-        "Binary_Right_Pokes",
-        "Binary_Pellets"
+        "FR",
     ]
 
-    for col in numeric_cols:
-        if col in df.columns:
-            df[col] = pd.to_numeric(df[col], errors="coerce")
+    for column in numeric_columns:
+        if column in df.columns:
+            df[column] = pd.to_numeric(df[column], errors="coerce")
 
-    df["Event_clean"] = (
-        df["Event"]
-        .astype(str)
-        .str.strip()
-        .str.replace(r"\s+", "", regex=True)
-    )
+    return df
 
-    # FED3 ClosedEcon files can appear in two common schemas:
-    # 1) Event = Poke, with Correct_Poke/Binary_Left_Pokes/Binary_Right_Pokes.
-    # 2) Event = Left/Right/LeftWithPellet/etc., without Correct_Poke.
-    df["PokeSide"] = pd.Series(pd.NA, index=df.index, dtype="object")
 
-    if "Binary_Left_Pokes" in df.columns:
-        df.loc[df["Binary_Left_Pokes"].eq(1), "PokeSide"] = "Left"
+# ------------------------------------------------------------
+# TRIAL TIMING AND ROLLING-ACCURACY HELPERS
+# ------------------------------------------------------------
+def event_millis_latency(start_row, terminal_row):
+    if "Block_Pellet_Count" not in start_row.index:
+        return np.nan
 
-    if "Binary_Right_Pokes" in df.columns:
-        df.loc[df["Binary_Right_Pokes"].eq(1), "PokeSide"] = "Right"
+    start_value = start_row.get("Block_Pellet_Count", np.nan)
+    end_value = terminal_row.get("Block_Pellet_Count", np.nan)
 
-    df.loc[
-        df["Event_clean"].str.startswith("Left", na=False),
-        "PokeSide"
-    ] = "Left"
+    if pd.isna(start_value) or pd.isna(end_value):
+        return np.nan
 
-    df.loc[
-        df["Event_clean"].str.startswith("Right", na=False),
-        "PokeSide"
-    ] = "Right"
+    latency = (end_value - start_value) / 1000
+    if 0 <= latency <= 60:
+        return latency
 
-    df["IsPoke"] = (
-        df["Event_clean"].eq("Poke")
-        | df["PokeSide"].isin(["Left", "Right"])
-    )
+    return np.nan
 
-    df["IsActivePoke"] = pd.Series(pd.NA, index=df.index, dtype="object")
 
-    if "Correct_Poke" in df.columns:
-        valid_correct = df["Correct_Poke"].isin([0, 1])
-        df.loc[valid_correct, "IsActivePoke"] = df.loc[
-            valid_correct,
-            "Correct_Poke"
-        ].eq(1)
+def rolling_binary(series, window):
+    numeric = pd.to_numeric(series, errors="coerce")
+    denominator = numeric.rolling(window=window, min_periods=1).count()
+    numerator = numeric.rolling(window=window, min_periods=1).sum()
+    percentage = (numerator / denominator.replace(0, np.nan)) * 100
+    return numerator, denominator, percentage
 
-    needs_side_fallback = df["IsActivePoke"].isna() & df["IsPoke"]
 
-    if "Active_Poke" in df.columns:
-        df.loc[needs_side_fallback, "IsActivePoke"] = (
-            df.loc[needs_side_fallback, "PokeSide"].astype(str).str.lower()
-            == df.loc[needs_side_fallback, "Active_Poke"].astype(str).str.lower()
-        )
-
-    # -------------------------
-    # BLOCK DETECTION
-    # -------------------------
-    df["BlockReset"] = df["Block_Pellet_Count"].diff() < 0
-
-    if "Concat_#" in df.columns:
-        df["BlockReset"] = (
-            df["BlockReset"]
-            | (df["Concat_#"].ne(df["Concat_#"].shift()) & df.index.to_series().ne(0))
-        )
-
-    df["Block"] = df["BlockReset"].cumsum() + 1
-
-    # -------------------------
-    # PELLET EVENTS = COMPLETED TRIALS
-    # -------------------------
-    is_pellet = df["Event_clean"].eq("Pellet")
-
-    if "Binary_Pellets" in df.columns:
-        is_pellet = is_pellet | df["Binary_Pellets"].eq(1)
-
-    pellet_idx = df[is_pellet].index.tolist()
-
-    trials = []
-    prev_idx = 0
-
-    start = None
-    end = None
-
-    if use_phase:
-        start = pd.to_datetime(light_start).time()
-        end   = pd.to_datetime(light_end).time()
-
-    for trial_num, idx in enumerate(pellet_idx, start=1):
-
-        trial_df = df.loc[prev_idx:idx].copy()
-        pellet_row = df.loc[idx]
-
-        row = summarize_interval(
-            trial_df=trial_df,
-            pellet_row=pellet_row,
-            trial_num=trial_num,
-            completed=1,
-            active_side=active_side,
-            phase_start=start,
-            phase_end=end,
-            use_phase=use_phase,
-        )
-
-        trials.append(row)
-        prev_idx = idx + 1
-
-    # -------------------------
-    # OPTIONAL CENSORED FINAL INTERVAL
-    # -------------------------
-    if include_incomplete and prev_idx < len(df):
-        final_df = df.loc[prev_idx:].copy()
-        final_pokes = final_df[final_df["IsPoke"].eq(True)]
-
-        if len(final_pokes) > 0:
-            trial_num = len(trials) + 1
-
-            row = summarize_interval(
-                trial_df=final_df,
-                pellet_row=None,
-                trial_num=trial_num,
-                completed=0,
-                active_side=active_side,
-                phase_start=start,
-                phase_end=end,
-                use_phase=use_phase,
-            )
-
-            trials.append(row)
-
-    trials_df = pd.DataFrame(trials)
-
+def add_trial_indices_and_rolling(trials_df, rolling_window, use_phase):
     if trials_df.empty:
         return trials_df
 
-    trials_df["CumulativePellets"] = trials_df["Completed"].cumsum()
-    trials_df["CumulativeActivePokes"] = trials_df["ActivePokes"].cumsum()
-    trials_df["CumulativeTotalPokes"] = trials_df["TotalPokes"].cumsum()
+    trials_df = trials_df.sort_values("Trial").reset_index(drop=True)
+    trials_df["TypeTrial"] = (
+        trials_df.groupby("TrialType", dropna=False).cumcount() + 1
+    )
+
+    numerator, denominator, accuracy = rolling_binary(
+        trials_df["Correct"], rolling_window
+    )
+    trials_df["RollingCorrectCount"] = numerator
+    trials_df["RollingTrialCount"] = denominator
+    trials_df["RollingAccuracy"] = accuracy
+
+    trials_df["TypeRollingCorrectCount"] = np.nan
+    trials_df["TypeRollingTrialCount"] = np.nan
+    trials_df["TypeRollingAccuracy"] = np.nan
+
+    for _, trial_type_df in trials_df.groupby("TrialType", dropna=False):
+        numerator, denominator, accuracy = rolling_binary(
+            trial_type_df["Correct"], rolling_window
+        )
+        trials_df.loc[
+            trial_type_df.index, "TypeRollingCorrectCount"
+        ] = numerator.to_numpy()
+        trials_df.loc[
+            trial_type_df.index, "TypeRollingTrialCount"
+        ] = denominator.to_numpy()
+        trials_df.loc[
+            trial_type_df.index, "TypeRollingAccuracy"
+        ] = accuracy.to_numpy()
+
+    completed_correct = trials_df["Correct"].fillna(0).cumsum()
+    completed_count = trials_df["Correct"].notna().cumsum()
+    trials_df["CumulativeCorrect"] = completed_correct
+    trials_df["CumulativeCompletedTrials"] = completed_count
+    trials_df["CumulativeAccuracy"] = (
+        completed_correct / completed_count.replace(0, np.nan)
+    ) * 100
+    trials_df["CumulativePellets"] = trials_df["PelletConfirmed"].cumsum()
 
     if use_phase:
         trials_df["PhaseTrial"] = (
-            trials_df
-            .groupby("Phase")
-            .cumcount()
+            trials_df.groupby("Phase", dropna=False).cumcount() + 1
+        )
+        trials_df["PhaseTypeTrial"] = (
+            trials_df.groupby(["Phase", "TrialType"], dropna=False).cumcount()
             + 1
         )
 
-        trials_df["ExclusivePhaseTrial"] = np.nan
-        exclusive_mask = trials_df["PhaseCrossing"].eq(False)
+        phase_rolling_specs = [
+            (
+                trials_df.index,
+                ["Phase"],
+                "PhaseRollingCorrectCount",
+                "PhaseRollingTrialCount",
+                "PhaseRollingAccuracy",
+            ),
+            (
+                trials_df.index,
+                ["Phase", "TrialType"],
+                "PhaseTypeRollingCorrectCount",
+                "PhaseTypeRollingTrialCount",
+                "PhaseTypeRollingAccuracy",
+            ),
+        ]
 
-        trials_df.loc[exclusive_mask, "ExclusivePhaseTrial"] = (
-            trials_df.loc[exclusive_mask]
-            .groupby("Phase")
-            .cumcount()
-            + 1
-        )
+        for indices, group_columns, count_col, n_col, accuracy_col in phase_rolling_specs:
+            trials_df[count_col] = np.nan
+            trials_df[n_col] = np.nan
+            trials_df[accuracy_col] = np.nan
+
+            selected = trials_df.loc[indices]
+            for _, group_data in selected.groupby(
+                group_columns, dropna=False, sort=False
+            ):
+                numerator, denominator, accuracy = rolling_binary(
+                    group_data["Correct"], rolling_window
+                )
+                trials_df.loc[group_data.index, count_col] = numerator.to_numpy()
+                trials_df.loc[group_data.index, n_col] = denominator.to_numpy()
+                trials_df.loc[group_data.index, accuracy_col] = accuracy.to_numpy()
     else:
         trials_df["PhaseTrial"] = trials_df["Trial"]
-        trials_df["ExclusivePhaseTrial"] = trials_df["Trial"]
+        trials_df["PhaseTypeTrial"] = trials_df["TypeTrial"]
+        trials_df["PhaseRollingCorrectCount"] = trials_df[
+            "RollingCorrectCount"
+        ]
+        trials_df["PhaseRollingTrialCount"] = trials_df[
+            "RollingTrialCount"
+        ]
+        trials_df["PhaseRollingAccuracy"] = trials_df["RollingAccuracy"]
+        trials_df["PhaseTypeRollingCorrectCount"] = trials_df[
+            "TypeRollingCorrectCount"
+        ]
+        trials_df["PhaseTypeRollingTrialCount"] = trials_df[
+            "TypeRollingTrialCount"
+        ]
+        trials_df["PhaseTypeRollingAccuracy"] = trials_df[
+            "TypeRollingAccuracy"
+        ]
+
+    return trials_df
+
+
+def add_sequential_context(
+    trials_df,
+    regular_omission_timeout_s=DEFAULT_REGULAR_OMISSION_TIMEOUT_S,
+    stop_error_noise_s=DEFAULT_STOP_ERROR_NOISE_S,
+    stop_error_timeout_s=DEFAULT_STOP_ERROR_TIMEOUT_S,
+):
+    if trials_df.empty:
+        return trials_df
+
+    trials_df = trials_df.sort_values("Trial").reset_index(drop=True).copy()
+    stop_error_lockout_s = stop_error_noise_s + stop_error_timeout_s
+    trials_df["PreviousTrialType"] = trials_df["TrialType"].shift()
+    trials_df["PreviousOutcome"] = trials_df["Outcome"].shift()
+    trials_df["PreviousSequence"] = trials_df["Sequence"].shift()
+    trials_df["PreviousCorrect"] = trials_df["Correct"].shift()
+    trials_df["AvailabilityTime"] = pd.NaT
+    trials_df["AvailabilityBasis"] = pd.NA
+    trials_df["RawAvailableInitiationLatency_s"] = np.nan
+    trials_df["AvailableInitiationLatency_s"] = np.nan
+    trials_df["PrecedingRegularRunLength"] = np.nan
+    trials_df["OutcomeStreakLength"] = 0
+
+    regular_run = 0
+    previous_correct = None
+    streak_length = 0
+
+    for index in trials_df.index:
+        current_correct = trials_df.at[index, "Correct"]
+
+        if pd.isna(current_correct):
+            streak_length = 0
+            previous_correct = None
+        elif previous_correct is not None and current_correct == previous_correct:
+            streak_length += 1
+        else:
+            streak_length = 1
+            previous_correct = current_correct
+
+        trials_df.at[index, "OutcomeStreakLength"] = streak_length
+
+        if trials_df.at[index, "TrialType"] == "Stop":
+            trials_df.at[index, "PrecedingRegularRunLength"] = regular_run
+            regular_run = 0
+        elif trials_df.at[index, "TrialType"] == "Regular":
+            regular_run += 1
+
+        if index == 0:
+            continue
+
+        previous = trials_df.loc[index - 1]
+        previous_sequence = previous["Sequence"]
+
+        if previous_sequence in ["Regular LRP", "Stop LNP"]:
+            availability_time = previous["PelletTime"]
+            basis = "Pellet delivery"
+            if pd.isna(availability_time):
+                availability_time = previous["EndTime"]
+                basis = "Terminal event fallback"
+        elif previous_sequence == "Regular LN":
+            availability_time = previous["EndTime"] + pd.Timedelta(
+                seconds=regular_omission_timeout_s
+            )
+            basis = (
+                f"End of {regular_omission_timeout_s}-second regular omission timeout"
+            )
+        elif previous_sequence == "Stop LR":
+            availability_time = previous["EndTime"] + pd.Timedelta(
+                seconds=stop_error_lockout_s
+            )
+            basis = (
+                f"End of {stop_error_noise_s}-second noise and "
+                f"{stop_error_timeout_s}-second stop-error timeout"
+            )
+        else:
+            availability_time = previous["EndTime"]
+            basis = "Previous terminal event"
+
+        trials_df.at[index, "AvailabilityTime"] = availability_time
+        trials_df.at[index, "AvailabilityBasis"] = basis
+
+        if pd.notna(availability_time) and pd.notna(trials_df.at[index, "StartTime"]):
+            raw_latency = (
+                trials_df.at[index, "StartTime"] - availability_time
+            ).total_seconds()
+            trials_df.at[index, "RawAvailableInitiationLatency_s"] = raw_latency
+            trials_df.at[index, "AvailableInitiationLatency_s"] = max(raw_latency, 0)
+
+    valid_latency = trials_df["AvailableInitiationLatency_s"].notna()
+    trials_df["CumulativeAvailableInitiationLatency_s"] = (
+        trials_df["AvailableInitiationLatency_s"].fillna(0).cumsum()
+    )
+    cumulative_count = valid_latency.cumsum()
+    trials_df["CumulativeMeanAvailableInitiationLatency_s"] = (
+        trials_df["CumulativeAvailableInitiationLatency_s"]
+        / cumulative_count.replace(0, np.nan)
+    )
+
+    trials_df["PhaseCumulativeAvailableInitiationLatency_s"] = (
+        trials_df["AvailableInitiationLatency_s"]
+        .fillna(0)
+        .groupby(trials_df["Phase"])
+        .cumsum()
+    )
+    phase_count = (
+        valid_latency.astype(int)
+        .groupby(trials_df["Phase"])
+        .cumsum()
+    )
+    trials_df["PhaseCumulativeMeanAvailableInitiationLatency_s"] = (
+        trials_df["PhaseCumulativeAvailableInitiationLatency_s"]
+        / phase_count.replace(0, np.nan)
+    )
 
     return trials_df
 
 
 # ------------------------------------------------------------
-# SUMMARY AND DEMAND METRICS
+# EVENT-BASED TRIAL RECONSTRUCTION
 # ------------------------------------------------------------
+def reconstruct_trials(
+    raw_df,
+    rolling_window=20,
+    use_phase=False,
+    light_start="07:00",
+    light_end="19:00",
+    regular_omission_timeout_s=DEFAULT_REGULAR_OMISSION_TIMEOUT_S,
+    stop_error_noise_s=DEFAULT_STOP_ERROR_NOISE_S,
+    stop_error_timeout_s=DEFAULT_STOP_ERROR_TIMEOUT_S,
+    stop_signal_delay_ms=DEFAULT_STOP_SIGNAL_DELAY_MS,
+    response_window_s=DEFAULT_RESPONSE_WINDOW_S,
+):
+    df = clean_raw_data(raw_df)
+    start_indices = df.index[df["Event_clean"].isin(START_EVENTS)].tolist()
+    trials = []
 
-def summarize_trials(trials_df):
+    phase_start = datetime.strptime(light_start, "%H:%M").time()
+    phase_end = datetime.strptime(light_end, "%H:%M").time()
 
+    for trial_number, start_index in enumerate(start_indices, start=1):
+        next_start = (
+            start_indices[trial_number]
+            if trial_number < len(start_indices)
+            else len(df)
+        )
+        interval = df.loc[start_index:next_start - 1].copy()
+        start_row = df.loc[start_index]
+        trial_type = START_EVENTS[start_row["Event_clean"]]
+
+        terminal_rows = interval[
+            interval["Event_clean"].isin(TERMINAL_EVENTS)
+        ]
+        terminal_count = len(terminal_rows)
+        terminal_row = terminal_rows.iloc[0] if terminal_count else None
+
+        if terminal_row is None:
+            terminal_event = np.nan
+            terminal_time = interval["Timestamp"].dropna().iloc[-1]
+            terminal_raw_row = np.nan
+            response_type = "Incomplete"
+            outcome = "Incomplete"
+            correct = np.nan
+            terminal_trial_type = np.nan
+            completed = 0
+            pellet_search = interval.iloc[0:0]
+        else:
+            terminal_event = terminal_row["Event_clean"]
+            terminal_info = TERMINAL_EVENTS[terminal_event]
+            terminal_time = terminal_row["Timestamp"]
+            terminal_raw_row = terminal_row["RawCSVRow"]
+            response_type = terminal_info["ResponseType"]
+            outcome = terminal_info["Outcome"]
+            correct = terminal_info["Correct"]
+            terminal_trial_type = terminal_info["TrialType"]
+            completed = 1
+            pellet_search = interval.loc[terminal_row.name:]
+
+        pellet_rows = pellet_search[
+            pellet_search["Event_clean"].eq("Pellet")
+        ]
+        pellet_confirmed = int(not pellet_rows.empty)
+        pellet_row = pellet_rows.iloc[0] if pellet_confirmed else None
+        pellet_time = (
+            pellet_row.get("Timestamp", pd.NaT)
+            if pellet_row is not None
+            else pd.NaT
+        )
+
+        timestamp_latency = (
+            (terminal_time - start_row["Timestamp"]).total_seconds()
+            if pd.notna(terminal_time) and pd.notna(start_row["Timestamp"])
+            else np.nan
+        )
+        millis_latency = (
+            event_millis_latency(start_row, terminal_row)
+            if terminal_row is not None
+            else np.nan
+        )
+        terminal_latency = (
+            millis_latency if pd.notna(millis_latency) else timestamp_latency
+        )
+        latency_source = (
+            "Block_Pellet_Count"
+            if pd.notna(millis_latency)
+            else "Timestamp"
+        )
+
+        if use_phase:
+            start_phase = identify_phase(
+                start_row["Timestamp"], phase_start, phase_end
+            )
+            end_phase = identify_phase(terminal_time, phase_start, phase_end)
+            phase_crossing = start_phase != end_phase
+            phase = end_phase
+        else:
+            start_phase = "All"
+            end_phase = "All"
+            phase_crossing = False
+            phase = "All"
+
+        expected_reward = correct if completed else np.nan
+        reward_mismatch = (
+            int(pellet_confirmed != expected_reward)
+            if completed
+            else np.nan
+        )
+
+        right_response_latency = (
+            terminal_latency if response_type == "RightPoke" else np.nan
+        )
+        withhold_duration = (
+            terminal_latency if response_type == "Withhold" else np.nan
+        )
+        pellet_delivery_latency = (
+            (pellet_time - terminal_time).total_seconds()
+            if pd.notna(pellet_time) and pd.notna(terminal_time)
+            else np.nan
+        )
+
+        sequence = {
+            "RegularCorrect": "Regular LRP",
+            "RegularIncorrect": "Regular LN",
+            "StopCorrect": "Stop LNP",
+            "StopIncorrect": "Stop LR",
+            "Incomplete": "Incomplete",
+        }[outcome]
+
+        trials.append({
+            "Trial": trial_number,
+            "TrialType": trial_type,
+            "Completed": completed,
+            "Outcome": outcome,
+            "Sequence": sequence,
+            "Correct": correct,
+            "ResponseType": response_type,
+            "StartEvent": start_row["Event_clean"],
+            "TerminalEvent": terminal_event,
+            "TerminalEventCount": terminal_count,
+            "TrialTypeMismatch": (
+                int(trial_type != terminal_trial_type)
+                if completed
+                else np.nan
+            ),
+            "PelletExpected": expected_reward,
+            "PelletConfirmed": pellet_confirmed,
+            "RewardMismatch": reward_mismatch,
+            "Phase": phase,
+            "StartPhase": start_phase,
+            "EndPhase": end_phase,
+            "PhaseCrossing": phase_crossing,
+            "StartTime": start_row["Timestamp"],
+            "EndTime": terminal_time,
+            "PelletTime": pellet_time,
+            "TerminalLatency_s": terminal_latency,
+            "TimestampLatency_s": timestamp_latency,
+            "EventMillisLatency_s": millis_latency,
+            "LatencySource": latency_source,
+            "RightResponseLatency_s": right_response_latency,
+            "WithholdDuration_s": withhold_duration,
+            "PelletDeliveryLatency_s": pellet_delivery_latency,
+            "InterTrialInterval_s": np.nan,
+            "StopSignalDelay_ms": stop_signal_delay_ms,
+            "ResponseWindow_s": response_window_s,
+            "RegularOmissionTimeout_s": regular_omission_timeout_s,
+            "StopErrorNoise_s": stop_error_noise_s,
+            "StopErrorTimeout_s": stop_error_timeout_s,
+            "StopErrorLockout_s": stop_error_noise_s + stop_error_timeout_s,
+            "PelletCountAtStart": start_row.get("Pellet_Count", np.nan),
+            "PelletCountAfterTrial": (
+                pellet_row.get("Pellet_Count", np.nan)
+                if pellet_row is not None
+                else interval["Pellet_Count"].dropna().iloc[-1]
+            ),
+            "PelletRetrievalTime": (
+                pellet_row.get("Retrieval_Time", np.nan)
+                if pellet_row is not None
+                else np.nan
+            ),
+            "InterPelletInterval": (
+                pellet_row.get("InterPelletInterval", np.nan)
+                if pellet_row is not None
+                else np.nan
+            ),
+            "LeftPokeCountAtStart": start_row.get(
+                "Left_Poke_Count", np.nan
+            ),
+            "RightPokeCountAtStart": start_row.get(
+                "Right_Poke_Count", np.nan
+            ),
+            "LeftPokeCountAtEnd": (
+                terminal_row.get("Left_Poke_Count", np.nan)
+                if terminal_row is not None
+                else interval["Left_Poke_Count"].dropna().iloc[-1]
+            ),
+            "RightPokeCountAtEnd": (
+                terminal_row.get("Right_Poke_Count", np.nan)
+                if terminal_row is not None
+                else interval["Right_Poke_Count"].dropna().iloc[-1]
+            ),
+            "StartRawCSVRow": start_row["RawCSVRow"],
+            "TerminalRawCSVRow": terminal_raw_row,
+            "RollingWindow": rolling_window,
+        })
+
+    trials_df = pd.DataFrame(trials)
+    if trials_df.empty:
+        return trials_df, df
+
+    trials_df["InterTrialInterval_s"] = (
+        trials_df["StartTime"] - trials_df["EndTime"].shift()
+    ).dt.total_seconds()
+
+    trials_df = add_trial_indices_and_rolling(
+        trials_df,
+        rolling_window=rolling_window,
+        use_phase=use_phase,
+    )
+    trials_df = add_sequential_context(
+        trials_df,
+        regular_omission_timeout_s=regular_omission_timeout_s,
+        stop_error_noise_s=stop_error_noise_s,
+        stop_error_timeout_s=stop_error_timeout_s,
+    )
+    return trials_df, df
+
+
+# ------------------------------------------------------------
+# MOUSE, TRIAL-TYPE, AND PHASE SUMMARIES
+# ------------------------------------------------------------
+def calculate_sequence_metrics(trials_df):
     completed = trials_df[trials_df["Completed"].eq(1)].copy()
-    all_rows = trials_df.copy()
+    regular_lrp = completed[completed["Sequence"].eq("Regular LRP")]
+    regular_ln = completed[completed["Sequence"].eq("Regular LN")]
+    stop_lnp = completed[completed["Sequence"].eq("Stop LNP")]
+    stop_lr = completed[completed["Sequence"].eq("Stop LR")]
 
-    total_session_time_h = (
-        (all_rows["EndTime"].max() - all_rows["StartTime"].min()).total_seconds() / 3600
-        if len(all_rows) > 0 else np.nan
-    )
-
-    total_pellets = completed["Completed"].sum()
-    total_pokes = all_rows["TotalPokes"].sum()
-    left_pokes = all_rows["LeftPokes"].sum()
-    right_pokes = all_rows["RightPokes"].sum()
-    active_pokes = all_rows["ActivePokes"].sum()
-    inactive_pokes = all_rows["InactivePokes"].sum()
-
-    final_completed = completed.tail(1)
-
-    final_fr = (
-        final_completed["FR"].iloc[0]
-        if len(final_completed) > 0
-        else np.nan
-    )
-
-    max_fr = completed["FR"].max() if len(completed) > 0 else np.nan
+    regular_lrp_count = len(regular_lrp)
+    regular_ln_count = len(regular_ln)
+    stop_lnp_count = len(stop_lnp)
+    stop_lr_count = len(stop_lr)
+    regular_trials = regular_lrp_count + regular_ln_count
+    stop_trials = stop_lnp_count + stop_lr_count
+    total_trials = regular_trials + stop_trials
+    pellet_count = int(completed["PelletConfirmed"].sum())
 
     return {
-        "TotalPellets": total_pellets,
-        "CompletedTrials": len(completed),
-        "TotalPokes": total_pokes,
-        "LeftPokes": left_pokes,
-        "RightPokes": right_pokes,
-        "ActivePokes": active_pokes,
-        "InactivePokes": inactive_pokes,
-        "Accuracy": (
-            (active_pokes / total_pokes) * 100
-            if total_pokes > 0 else np.nan
+        "Regular LRP count": regular_lrp_count,
+        "Regular LRP latency LR sum (secs)": regular_lrp[
+            "RightResponseLatency_s"
+        ].sum(),
+        "Regular LRP latency LR avg (secs)": regular_lrp[
+            "RightResponseLatency_s"
+        ].mean(),
+        "Regular LRP latency RP sum (secs)": regular_lrp[
+            "PelletDeliveryLatency_s"
+        ].sum(),
+        "Regular LRP latency RP avg (secs)": regular_lrp[
+            "PelletDeliveryLatency_s"
+        ].mean(),
+        "Regular LN count": regular_ln_count,
+        "Stop LNP count": stop_lnp_count,
+        "Stop LNP latency NP sum (secs)": stop_lnp[
+            "PelletDeliveryLatency_s"
+        ].sum(),
+        "Stop LNP latency NP avg (secs)": stop_lnp[
+            "PelletDeliveryLatency_s"
+        ].mean(),
+        "Stop LR count": stop_lr_count,
+        "Stop LR latency LR sum (secs)": stop_lr[
+            "RightResponseLatency_s"
+        ].sum(),
+        "Stop LR latency LR avg (secs)": stop_lr[
+            "RightResponseLatency_s"
+        ].mean(),
+        "Regular LRP/total regular (%)": safe_percent(
+            regular_lrp_count, regular_trials
         ),
-        "InactivePokePercent": (
-            (inactive_pokes / total_pokes) * 100
-            if total_pokes > 0 else np.nan
+        "Regular LN/total regular (%)": safe_percent(
+            regular_ln_count, regular_trials
         ),
-        "PokesPerPellet": (
-            total_pokes / total_pellets
-            if total_pellets > 0 else np.nan
+        "Regular Trials": regular_trials,
+        "Stop LNP/total stop (%)": safe_percent(stop_lnp_count, stop_trials),
+        "Stop LR/total stop (%)": safe_percent(stop_lr_count, stop_trials),
+        "Stop Trials": stop_trials,
+        "Regular LRP/total trials (%)": safe_percent(
+            regular_lrp_count, total_trials
         ),
-        "ActivePokesPerPellet": (
-            active_pokes / total_pellets
-            if total_pellets > 0 else np.nan
+        "Regular LN/total trials (%)": safe_percent(
+            regular_ln_count, total_trials
         ),
-        "InactivePokesPerPellet": (
-            inactive_pokes / total_pellets
-            if total_pellets > 0 else np.nan
+        "Regular trials/total trials (%)": safe_percent(
+            regular_trials, total_trials
         ),
-        "PelletsPerHour": (
-            total_pellets / total_session_time_h
-            if total_session_time_h > 0 else np.nan
+        "Stop LNP/total trials (%)": safe_percent(
+            stop_lnp_count, total_trials
         ),
-        "ActivePokesPerHour": (
-            active_pokes / total_session_time_h
-            if total_session_time_h > 0 else np.nan
+        "Stop LR/total trials (%)": safe_percent(stop_lr_count, total_trials),
+        "Stop trials/total trials (%)": safe_percent(stop_trials, total_trials),
+        "Total Trials": total_trials,
+        "Pellet count": pellet_count,
+        "LRP/total pellets (%)": safe_percent(
+            regular_lrp_count, pellet_count
         ),
-        "TotalSessionTime_h": total_session_time_h,
-        "FinalFR": final_fr,
-        "MaxFR": max_fr,
-        "MeanFR": completed["FR"].mean(),
-        "MedianFR": completed["FR"].median(),
-        "MeanTrialDuration_min": completed["Duration_min"].mean(),
-        "MeanVigor": completed["Vigor"].mean(),
-        "MeanTotalPokeRate": completed["TotalPokeRate"].mean(),
-        "MeanInactivePokeRate": completed["InactivePokeRate"].mean(),
-        "MeanInactivePokePercent": completed["InactivePokePercent"].mean(),
-        "MeanRetrievalTime": completed["RetrievalTime"].mean(),
-        "MeanInterPelletInterval": completed["InterPelletInterval"].mean(),
-        "BlocksCompleted": completed["Block"].nunique(),
-        "IncompleteFinalInterval": int(all_rows["Completed"].eq(0).any()),
-        "IncompleteFinalPokes": all_rows.loc[
-            all_rows["Completed"].eq(0),
-            "TotalPokes"
-        ].sum()
+        "LNP/total pellets (%)": safe_percent(stop_lnp_count, pellet_count),
     }
 
-def demand_by_fr(trials_df):
 
+def calculate_adjustment_metrics(trials_df):
+    regular = trials_df[
+        trials_df["TrialType"].eq("Regular")
+        & trials_df["Completed"].eq(1)
+    ].copy()
+
+    after_regular = regular[regular["PreviousTrialType"].eq("Regular")]
+    after_stop = regular[regular["PreviousTrialType"].eq("Stop")]
+    after_stop_success = regular[regular["PreviousSequence"].eq("Stop LNP")]
+    after_stop_error = regular[regular["PreviousSequence"].eq("Stop LR")]
+    after_correct = regular[regular["PreviousCorrect"].eq(1)]
+    after_error = regular[regular["PreviousCorrect"].eq(0)]
+
+    def accuracy(data):
+        return data["Correct"].mean() * 100 if not data.empty else np.nan
+
+    def correct_rt(data):
+        return data.loc[
+            data["Outcome"].eq("RegularCorrect"),
+            "RightResponseLatency_s",
+        ].mean()
+
+    def initiation(data):
+        return data["AvailableInitiationLatency_s"].mean()
+
+    return {
+        "MeanAvailableInitiationLatency_s": trials_df[
+            "AvailableInitiationLatency_s"
+        ].mean(),
+        "MedianAvailableInitiationLatency_s": trials_df[
+            "AvailableInitiationLatency_s"
+        ].median(),
+        "PostErrorSlowing_s": correct_rt(after_error) - correct_rt(after_correct),
+        "PostStopRegularAccuracyChange": (
+            accuracy(after_stop) - accuracy(after_regular)
+        ),
+        "PostStopRegularRTChange_s": (
+            correct_rt(after_stop) - correct_rt(after_regular)
+        ),
+        "PostStopInitiationChange_s": (
+            initiation(after_stop) - initiation(after_regular)
+        ),
+        "PostStopErrorAccuracyChange": (
+            accuracy(after_stop_error) - accuracy(after_stop_success)
+        ),
+        "PostStopErrorRTChange_s": (
+            correct_rt(after_stop_error) - correct_rt(after_stop_success)
+        ),
+        "PostStopErrorInitiationChange_s": (
+            initiation(after_stop_error) - initiation(after_stop_success)
+        ),
+        "RegularTrialsAfterRegular": len(after_regular),
+        "RegularTrialsAfterStop": len(after_stop),
+        "RegularTrialsAfterStopSuccess": len(after_stop_success),
+        "RegularTrialsAfterStopError": len(after_stop_error),
+    }
+
+
+def summarize_trials(trials_df, event_counts):
     completed = trials_df[trials_df["Completed"].eq(1)].copy()
+    regular = completed[completed["TrialType"].eq("Regular")]
+    stop = completed[completed["TrialType"].eq("Stop")]
+    regular_correct = regular[regular["Correct"].eq(1)]
+    stop_incorrect = stop[stop["Correct"].eq(0)]
+    correct_withhold = stop[stop["Correct"].eq(1)]
 
-    if completed.empty:
-        return pd.DataFrame()
-
-    demand = (
-        completed
-        .groupby("FR", dropna=False)
-        .agg(
-            Pellets=("Completed", "sum"),
-            LeftPokes=("LeftPokes", "sum"),
-            RightPokes=("RightPokes", "sum"),
-            ActivePokes=("ActivePokes", "sum"),
-            InactivePokes=("InactivePokes", "sum"),
-            TotalPokes=("TotalPokes", "sum"),
-            TotalDuration_min=("Duration_min", "sum"),
-            MeanAccuracy=("Accuracy", "mean"),
-            MeanVigor=("Vigor", "mean"),
-            MeanTotalPokeRate=("TotalPokeRate", "mean"),
-            MeanInactivePokeRate=("InactivePokeRate", "mean"),
-            MeanInactivePokePercent=("InactivePokePercent", "mean"),
-            MeanDuration_min=("Duration_min", "mean"),
-            MeanRetrievalTime=("RetrievalTime", "mean"),
-            MeanInterPelletInterval=("InterPelletInterval", "mean")
-        )
-        .reset_index()
+    session_duration_h = (
+        (trials_df["EndTime"].max() - trials_df["StartTime"].min())
+        .total_seconds()
+        / 3600
+        if not trials_df.empty
+        else np.nan
     )
+    regular_accuracy = safe_percent(regular["Correct"].sum(), len(regular))
+    stop_accuracy = safe_percent(stop["Correct"].sum(), len(stop))
 
-    demand["PokesPerPellet"] = demand["TotalPokes"] / demand["Pellets"]
-    demand["ActivePokesPerPellet"] = demand["ActivePokes"] / demand["Pellets"]
-    demand["InactivePokesPerPellet"] = demand["InactivePokes"] / demand["Pellets"]
-    demand["PooledAccuracy"] = (
-        demand["ActivePokes"] / demand["TotalPokes"].replace(0, np.nan)
-    ) * 100
-    demand["InactivePokePercent"] = (
-        demand["InactivePokes"] / demand["TotalPokes"].replace(0, np.nan)
-    ) * 100
-    demand["PelletsPerMinute"] = (
-        demand["Pellets"] / demand["TotalDuration_min"].replace(0, np.nan)
-    )
+    summary = {
+        "TotalTrials": len(trials_df),
+        "CompletedTrials": len(completed),
+        "IncompleteTrials": int(trials_df["Completed"].eq(0).sum()),
+        "RegularTrials": len(regular),
+        "StopTrials": len(stop),
+        "StopTrialPercent": safe_percent(len(stop), len(completed)),
+        "OverallAccuracy": safe_percent(
+            completed["Correct"].sum(), len(completed)
+        ),
+        "RegularAccuracy": regular_accuracy,
+        "StopAccuracy": stop_accuracy,
+        "BalancedAccuracy": np.nanmean(
+            [regular_accuracy, stop_accuracy]
+        ),
+        "RegularOmissionRate": (
+            100 - regular_accuracy if pd.notna(regular_accuracy) else np.nan
+        ),
+        "StopFailureRate": (
+            100 - stop_accuracy if pd.notna(stop_accuracy) else np.nan
+        ),
+        "PelletsConfirmed": int(trials_df["PelletConfirmed"].sum()),
+        "RewardMismatches": int(
+            pd.to_numeric(
+                trials_df["RewardMismatch"], errors="coerce"
+            ).fillna(0).sum()
+        ),
+        "TrialTypeMismatches": int(
+            pd.to_numeric(
+                trials_df["TrialTypeMismatch"], errors="coerce"
+            ).fillna(0).sum()
+        ),
+        "MultipleTerminalTrials": int(
+            trials_df["TerminalEventCount"].gt(1).sum()
+        ),
+        "MeanRegularCorrectRT_s": regular_correct[
+            "RightResponseLatency_s"
+        ].mean(),
+        "MedianRegularCorrectRT_s": regular_correct[
+            "RightResponseLatency_s"
+        ].median(),
+        "MeanStopFailureRT_s": stop_incorrect[
+            "RightResponseLatency_s"
+        ].mean(),
+        "MedianStopFailureRT_s": stop_incorrect[
+            "RightResponseLatency_s"
+        ].median(),
+        "MeanCorrectWithhold_s": correct_withhold[
+            "WithholdDuration_s"
+        ].mean(),
+        "MeanInterTrialInterval_s": trials_df[
+            "InterTrialInterval_s"
+        ].mean(),
+        "MedianInterTrialInterval_s": trials_df[
+            "InterTrialInterval_s"
+        ].median(),
+        "RightNoLeftEvents": int(event_counts.get("Right_no_left", 0)),
+        "LeftTimeoutEvents": int(event_counts.get("LeftinTimeOut", 0)),
+        "RightTimeoutEvents": int(event_counts.get("RightinTimeout", 0)),
+        "SessionDuration_h": session_duration_h,
+    }
+    summary.update(calculate_sequence_metrics(trials_df))
+    summary.update(calculate_adjustment_metrics(trials_df))
+    return summary
 
-    return demand
 
-def demand_by_fr_phase(trials_df, use_phase, exclusive_only=False):
-
-    if not use_phase or "Phase" not in trials_df.columns:
-        return pd.DataFrame()
-
-    completed = trials_df[trials_df["Completed"].eq(1)].copy()
-
-    if exclusive_only and "PhaseCrossing" in completed.columns:
-        completed = completed[completed["PhaseCrossing"].eq(False)].copy()
-
-    if completed.empty:
-        return pd.DataFrame()
-
-    phase_demand = []
-
-    for phase, d_phase in completed.groupby("Phase"):
-        demand = demand_by_fr(d_phase)
-
-        if demand.empty:
-            continue
-
-        demand["Phase"] = phase
-        phase_demand.append(demand)
-
-    if len(phase_demand) == 0:
-        return pd.DataFrame()
-
-    return pd.concat(phase_demand, ignore_index=True)
+def summarize_trial_types(trials_df):
+    rows = []
+    for trial_type, data in trials_df.groupby("TrialType", dropna=False):
+        completed = data[data["Completed"].eq(1)]
+        rows.append({
+            "TrialType": trial_type,
+            "Trials": len(data),
+            "CompletedTrials": len(completed),
+            "CorrectTrials": completed["Correct"].sum(),
+            "Accuracy": safe_percent(
+                completed["Correct"].sum(), len(completed)
+            ),
+            "RightPokeTrials": int(
+                completed["ResponseType"].eq("RightPoke").sum()
+            ),
+            "WithholdTrials": int(
+                completed["ResponseType"].eq("Withhold").sum()
+            ),
+            "MeanTerminalLatency_s": completed[
+                "TerminalLatency_s"
+            ].mean(),
+            "MedianTerminalLatency_s": completed[
+                "TerminalLatency_s"
+            ].median(),
+        })
+    return pd.DataFrame(rows)
 
 
-# ------------------------------------------------------------
-# OUTPUT TABLE HELPERS
-# ------------------------------------------------------------
-
-def move_metadata_left(df):
-
-    if df.empty:
-        return df
-
-    left_cols = [
-        col for col in metadata_cols_left
-        if col in df.columns
-    ]
-
-    other_cols = [
-        col for col in df.columns
-        if col not in left_cols
-    ]
-
-    return df[left_cols + other_cols]
-
-def reorder_columns(df, front_cols):
-
-    if df.empty:
-        return df
-
-    front = [
-        col for col in front_cols
-        if col in df.columns
-    ]
-
-    rest = [
-        col for col in df.columns
-        if col not in front
-    ]
-
-    return df[front + rest]
-
-def metadata_rows(columns):
-
-    mouse_row = [""] + list(columns)
-
-    geno_row = [""] + [
-        summary_df.loc[summary_df[mouse_col].astype(str).eq(str(m)), group_col].iloc[0]
-        for m in columns
-    ]
-
-    sex_row = [""] + [
-        summary_df.loc[summary_df[mouse_col].astype(str).eq(str(m)), sex_col].iloc[0]
-        for m in columns
-    ]
-
-    return mouse_row, geno_row, sex_row
-
-def make_summary_metric_table(metric, data=None):
-
-    if data is None:
-        data = summary_df
-
-    if metric not in data.columns:
+def summarize_phases(trials_df):
+    if "Phase" not in trials_df.columns:
         return pd.DataFrame()
 
     rows = []
+    for phase, phase_data in trials_df.groupby("Phase"):
+        phase_summary = summarize_trials(
+            phase_data,
+            pd.Series(dtype="int64"),
+        )
+        phase_summary["Phase"] = phase
+        rows.append(phase_summary)
+    return pd.DataFrame(rows)
 
-    for mouse in ordered_mice:
 
-        d_mouse = data[data[mouse_col].astype(str).eq(str(mouse))]
+# ------------------------------------------------------------
+# PERI-STOP ALIGNMENT AND PCA PREPARATION
+# ------------------------------------------------------------
+def build_peri_stop_data(
+    trials_df,
+    peri_window,
+    mouse_col,
+    sex_col,
+    group_col,
+):
+    if trials_df.empty:
+        return pd.DataFrame()
 
-        if d_mouse.empty:
-            continue
+    data = trials_df.sort_values("Trial").reset_index(drop=True)
+    anchors = data.index[data["TrialType"].eq("Stop")].tolist()
+    rows = []
 
-        rows.append({
-            "Filename": d_mouse["Filename"].iloc[0],
-            mouse_col: d_mouse[mouse_col].iloc[0],
-            sex_col: d_mouse[sex_col].iloc[0],
-            group_col: d_mouse[group_col].iloc[0],
-            metric: d_mouse[metric].iloc[0]
-        })
+    for anchor_index in anchors:
+        anchor = data.loc[anchor_index]
+        anchor_category = (
+            "Stop Success"
+            if anchor["Sequence"] == "Stop LNP"
+            else "Stop Error"
+        )
 
-    out = pd.DataFrame(rows)
+        for relative_trial in range(-peri_window, peri_window + 1):
+            surrounding_index = anchor_index + relative_trial
+            if surrounding_index < 0 or surrounding_index >= len(data):
+                continue
 
-    cols = [
-        col for col in [
-            "Filename",
-            mouse_col,
-            sex_col,
-            group_col,
-            metric
-        ]
-        if col in out.columns
+            surrounding = data.loc[surrounding_index]
+            is_regular = surrounding["TrialType"] == "Regular"
+            is_regular_correct = surrounding["Outcome"] == "RegularCorrect"
+
+            rows.append({
+                "Filename": anchor.get("Filename", np.nan),
+                mouse_col: anchor.get(mouse_col, np.nan),
+                sex_col: anchor.get(sex_col, np.nan),
+                group_col: anchor.get(group_col, np.nan),
+                "Phase": anchor["Phase"],
+                "AnchorTrial": anchor["Trial"],
+                "AnchorSequence": anchor["Sequence"],
+                "AnchorCategory": anchor_category,
+                "RelativeTrial": relative_trial,
+                "SurroundingTrial": surrounding["Trial"],
+                "SurroundingTrialType": surrounding["TrialType"],
+                "SurroundingSequence": surrounding["Sequence"],
+                "SurroundingCorrect": surrounding["Correct"],
+                "RegularAccuracy": (
+                    surrounding["Correct"] * 100 if is_regular else np.nan
+                ),
+                "RegularCorrectRT_s": (
+                    surrounding["RightResponseLatency_s"]
+                    if is_regular_correct
+                    else np.nan
+                ),
+                "AvailableInitiationLatency_s": surrounding[
+                    "AvailableInitiationLatency_s"
+                ],
+                "PeriWindow": peri_window,
+            })
+
+    return pd.DataFrame(rows)
+
+
+def run_mouse_pca(summary_df, mouse_col, sex_col, group_col):
+    empty_result = {
+        "performed": False,
+        "scores": pd.DataFrame(),
+        "loadings": pd.DataFrame(),
+        "variance": pd.DataFrame(),
+        "input": pd.DataFrame(),
+        "diagnostics": pd.DataFrame(),
+        "features": [],
+        "pca_model": None,
+        "scaler": None,
+        "imputation_means": pd.Series(dtype=float),
+    }
+
+    available_features = [
+        feature for feature in PCA_FEATURES if feature in summary_df.columns
+    ]
+    if len(available_features) < 2:
+        return empty_result
+
+    aggregations = {
+        sex_col: "first",
+        group_col: "first",
+        **{feature: "mean" for feature in available_features},
+    }
+    mouse_data = (
+        summary_df.groupby(mouse_col, as_index=False)
+        .agg(aggregations)
+        .copy()
+    )
+
+    numeric = mouse_data[available_features].apply(
+        pd.to_numeric, errors="coerce"
+    )
+    usable_features = [
+        feature
+        for feature in available_features
+        if numeric[feature].notna().sum() >= 2
+        and numeric[feature].nunique(dropna=True) > 1
     ]
 
-    cols = list(dict.fromkeys(cols))
+    if len(mouse_data) < 3 or len(usable_features) < 2:
+        return empty_result
 
-    return out[cols]
+    numeric = numeric[usable_features]
+    imputation_means = numeric.mean()
+    imputed = numeric.fillna(imputation_means)
+    scaler = StandardScaler()
+    scaled = scaler.fit_transform(imputed)
+    pca = PCA(n_components=2)
+    components = pca.fit_transform(scaled)
 
-def make_trial_metric_table(metric, data=None, index_col="Trial"):
+    scores = mouse_data[[mouse_col, sex_col, group_col]].copy()
+    scores["PC1"] = components[:, 0]
+    scores["PC2"] = components[:, 1]
 
-    if data is None:
-        data = trials_all_df[trials_all_df["Completed"].eq(1)].copy()
+    pca_input = mouse_data[[mouse_col, sex_col, group_col]].copy()
+    for feature in usable_features:
+        pca_input[feature] = imputed[feature].to_numpy()
 
-    if data.empty or metric not in data.columns:
+    loadings = pd.DataFrame({
+        "Feature": usable_features,
+        "PC1": pca.components_[0],
+        "PC2": pca.components_[1],
+    })
+    variance = pd.DataFrame({
+        "Component": ["PC1", "PC2"],
+        "ExplainedVarianceRatio": pca.explained_variance_ratio_,
+        "ExplainedVariancePercent": pca.explained_variance_ratio_ * 100,
+    })
+    diagnostics = pd.DataFrame({
+        "Feature": usable_features,
+        "ImputationMean": [imputation_means[feature] for feature in usable_features],
+        "ScalingMean": scaler.mean_,
+        "ScalingSD": scaler.scale_,
+        "MissingValuesImputed": [
+            int(numeric[feature].isna().sum()) for feature in usable_features
+        ],
+    })
+
+    return {
+        "performed": True,
+        "scores": scores,
+        "loadings": loadings,
+        "variance": variance,
+        "input": pca_input,
+        "diagnostics": diagnostics,
+        "features": usable_features,
+        "pca_model": pca,
+        "scaler": scaler,
+        "imputation_means": imputation_means,
+    }
+
+
+def project_phase_pca(
+    phase_summary_df,
+    pca_results,
+    mouse_col,
+    sex_col,
+    group_col,
+):
+    if phase_summary_df.empty or not pca_results["performed"]:
+        return pd.DataFrame(), pd.DataFrame()
+
+    features = pca_results["features"]
+    score_rows = []
+    input_rows = []
+
+    for phase, phase_data in phase_summary_df.groupby("Phase"):
+        aggregations = {
+            sex_col: "first",
+            group_col: "first",
+            **{feature: "mean" for feature in features},
+        }
+        mouse_data = (
+            phase_data.groupby(mouse_col, as_index=False)
+            .agg(aggregations)
+            .copy()
+        )
+        if mouse_data.empty:
+            continue
+
+        numeric = mouse_data[features].apply(pd.to_numeric, errors="coerce")
+        imputed = numeric.fillna(pca_results["imputation_means"])
+        scaled = pca_results["scaler"].transform(imputed)
+        components = pca_results["pca_model"].transform(scaled)
+
+        scores = mouse_data[[mouse_col, sex_col, group_col]].copy()
+        scores.insert(3, "Phase", phase)
+        scores["PC1"] = components[:, 0]
+        scores["PC2"] = components[:, 1]
+        score_rows.append(scores)
+
+        pca_input = mouse_data[[mouse_col, sex_col, group_col]].copy()
+        pca_input.insert(3, "Phase", phase)
+        for feature in features:
+            pca_input[feature] = imputed[feature].to_numpy()
+        input_rows.append(pca_input)
+
+    phase_scores = (
+        pd.concat(score_rows, ignore_index=True)
+        if score_rows
+        else pd.DataFrame()
+    )
+    phase_input = (
+        pd.concat(input_rows, ignore_index=True)
+        if input_rows
+        else pd.DataFrame()
+    )
+    return phase_scores, phase_input
+
+
+# ------------------------------------------------------------
+# PRISM TABLE AND EXCEL-NAME HELPERS
+# ------------------------------------------------------------
+def move_metadata_left(data, metadata_columns):
+    if data.empty:
+        return data
+    front = [column for column in metadata_columns if column in data.columns]
+    remaining = [column for column in data.columns if column not in front]
+    return data[front + remaining]
+
+
+def safe_sheet_name(name):
+    invalid = "[]:*?/\\"
+    cleaned = "".join("_" if character in invalid else character for character in name)
+    return cleaned[:31]
+
+
+def prism_summary_table(summary_df, metric, mouse_col, sex_col, group_col):
+    columns = [mouse_col, sex_col, group_col, metric]
+    table = summary_df[columns].copy()
+    return table.rename(columns=SUMMARY_DISPLAY_NAMES)
+
+
+def format_summary_for_export(summary_df):
+    display_df = summary_df.rename(columns=SUMMARY_DISPLAY_NAMES).copy()
+    return display_df.loc[:, ~display_df.columns.duplicated()]
+
+
+def prism_trial_table(
+    trials_df,
+    metric,
+    index_col,
+    mouse_col,
+    sex_col,
+    group_col,
+):
+    data = trials_df.dropna(subset=[index_col, metric]).copy()
+    if data.empty:
         return pd.DataFrame()
-    
-    if index_col not in data.columns:
-        index_col = "Trial"
 
-    pivot = data.pivot_table(
+    wide = data.pivot_table(
         index=index_col,
         columns=mouse_col,
         values=metric,
-        aggfunc="mean"
+        aggfunc="mean",
+    ).sort_index()
+
+    metadata = (
+        data[[mouse_col, sex_col, group_col]]
+        .drop_duplicates(subset=[mouse_col])
     )
-
-    pivot.columns = pivot.columns.astype(str)
-    valid_mice = [m for m in ordered_mice if str(m) in pivot.columns]
-
-    if len(valid_mice) == 0:
-        return pd.DataFrame()
-
-    pivot = pivot[valid_mice].reset_index()
-    pivot.columns = [index_col] + valid_mice
-
-    mouse_row, geno_row, sex_row = metadata_rows(valid_mice)
-
-    meta = pd.DataFrame(
-        [mouse_row, geno_row, sex_row],
-        index=[mouse_col, group_col, sex_col],
-        columns=pivot.columns
+    metadata = sort_metadata_for_wide_tables(
+        metadata,
+        mouse_col,
+        [sex_col, group_col],
     )
-
-    return pd.concat([meta, pivot])
-
-def make_demand_metric_table(metric, data=None):
-
-    if data is None:
-        data = demand_df
-
-    if data.empty or metric not in data.columns:
-        return pd.DataFrame()
-
-    pivot = data.pivot_table(
-        index="FR",
-        columns=mouse_col,
-        values=metric,
-        aggfunc="mean"
+    requested_order = metadata[mouse_col].tolist()
+    ordered_mice = [
+        mouse for mouse in requested_order
+        if mouse in wide.columns
+    ]
+    ordered_mice.extend(
+        mouse for mouse in wide.columns
+        if mouse not in ordered_mice
     )
-
-    pivot.columns = pivot.columns.astype(str)
-    valid_mice = [m for m in ordered_mice if str(m) in pivot.columns]
-
-    if len(valid_mice) == 0:
-        return pd.DataFrame()
-
-    pivot = pivot[valid_mice].reset_index()
-    pivot.columns = ["FR"] + valid_mice
-
-    mouse_row, geno_row, sex_row = metadata_rows(valid_mice)
-
-    meta = pd.DataFrame(
-        [mouse_row, geno_row, sex_row],
-        index=[mouse_col, group_col, sex_col],
-        columns=pivot.columns
+    wide = wide.loc[:, ordered_mice]
+    metadata = metadata.set_index(mouse_col)
+    header = pd.DataFrame(
+        [
+            [metadata.at[mouse, group_col] for mouse in ordered_mice],
+            [metadata.at[mouse, sex_col] for mouse in ordered_mice],
+        ],
+        index=[group_col, sex_col],
+        columns=ordered_mice,
     )
-
-    return pd.concat([meta, pivot])
-
-def safe_sheet_name(name):
-    bad_chars = ["\\", "/", "*", "[", "]", ":", "?"]
-
-    for char in bad_chars:
-        name = name.replace(char, "_")
-
-    return name[:31]
+    body = wide.copy()
+    body.index = body.index.map(str)
+    return pd.concat([header, body], axis=0)
 
 
 # ------------------------------------------------------------
-# PLOT FILE AND COLOUR HELPERS
+# EXCEL WORKBOOK EXPORT
 # ------------------------------------------------------------
+def write_outputs(
+    output_path,
+    trials_df,
+    summary_df,
+    type_summary_df,
+    event_counts_df,
+    phase_summary_df,
+    peri_stop_df,
+    pca_results,
+    phase_pca_scores_df,
+    phase_pca_input_df,
+    analysis_settings_df,
+    mouse_col,
+    sex_col,
+    group_col,
+    use_phase,
+):
+    metadata_columns = ["Filename", mouse_col, sex_col, group_col]
+    trials_df = move_metadata_left(trials_df, metadata_columns)
+    summary_df = move_metadata_left(summary_df, metadata_columns)
+    type_summary_df = move_metadata_left(type_summary_df, metadata_columns)
+    event_counts_df = move_metadata_left(event_counts_df, metadata_columns)
+    phase_summary_df = move_metadata_left(
+        phase_summary_df, metadata_columns
+    )
 
-def get_plot_subfolder(filename):
+    validation_columns = metadata_columns + [
+        "Trial",
+        "Completed",
+        "TrialTypeMismatch",
+        "TerminalEventCount",
+        "PelletExpected",
+        "PelletConfirmed",
+        "RewardMismatch",
+        "StartRawCSVRow",
+        "TerminalRawCSVRow",
+    ]
+    validation = trials_df[
+        [column for column in validation_columns if column in trials_df.columns]
+    ].copy()
 
+    with pd.ExcelWriter(output_path) as writer:
+        trials_df.to_excel(writer, sheet_name="Trials", index=False)
+        format_summary_for_export(summary_df).to_excel(
+            writer, sheet_name="Summary", index=False
+        )
+        type_summary_df.to_excel(
+            writer, sheet_name="TrialType_Summary", index=False
+        )
+        event_counts_df.to_excel(
+            writer, sheet_name="Event_Counts", index=False
+        )
+        validation.to_excel(writer, sheet_name="Validation", index=False)
+        if analysis_settings_df is not None and not analysis_settings_df.empty:
+            analysis_settings_df.to_excel(
+                writer,
+                sheet_name="Analysis_Settings",
+                index=False,
+            )
+
+        if not peri_stop_df.empty:
+            excel_row_limit = 1_000_000
+            for start_row in range(0, len(peri_stop_df), excel_row_limit):
+                stop_row = start_row + excel_row_limit
+                sheet_number = (start_row // excel_row_limit) + 1
+                sheet_name = (
+                    "PeriStop_Trials"
+                    if len(peri_stop_df) <= excel_row_limit
+                    else f"PeriStop_Trials_{sheet_number}"
+                )
+                peri_stop_df.iloc[start_row:stop_row].to_excel(
+                    writer,
+                    sheet_name=sheet_name,
+                    index=False,
+                )
+
+        if pca_results["performed"]:
+            pca_results["scores"].to_excel(
+                writer, sheet_name="PCA_Scores", index=False
+            )
+            pca_results["loadings"].to_excel(
+                writer, sheet_name="PCA_Loadings", index=False
+            )
+            pca_results["variance"].to_excel(
+                writer, sheet_name="PCA_Variance", index=False
+            )
+            pca_results["input"].to_excel(
+                writer, sheet_name="PCA_Input", index=False
+            )
+            pca_results["diagnostics"].to_excel(
+                writer, sheet_name="PCA_Diagnostics", index=False
+            )
+
+            if not phase_pca_scores_df.empty:
+                phase_pca_scores_df.to_excel(
+                    writer, sheet_name="PCA_Phase_Scores", index=False
+                )
+                phase_pca_input_df.to_excel(
+                    writer, sheet_name="PCA_Phase_Input", index=False
+                )
+
+                for phase, phase_scores in phase_pca_scores_df.groupby("Phase"):
+                    phase_scores.to_excel(
+                        writer,
+                        sheet_name=safe_sheet_name(f"PCA_Scores_{phase}"),
+                        index=False,
+                    )
+                    phase_pca_input_df[
+                        phase_pca_input_df["Phase"].eq(phase)
+                    ].to_excel(
+                        writer,
+                        sheet_name=safe_sheet_name(f"PCA_Input_{phase}"),
+                        index=False,
+                    )
+
+        if use_phase:
+            format_summary_for_export(phase_summary_df).to_excel(
+                writer, sheet_name="Phase_Summary", index=False
+            )
+
+            for phase in ["Dark", "Light"]:
+                phase_data = trials_df[trials_df["Phase"].eq(phase)]
+                phase_data.to_excel(
+                    writer,
+                    sheet_name=safe_sheet_name(f"Trials_{phase}"),
+                    index=False,
+                )
+
+        for metric in SUMMARY_METRICS:
+            if metric not in summary_df.columns:
+                continue
+            prism_summary_table(
+                summary_df, metric, mouse_col, sex_col, group_col
+            ).to_excel(
+                writer,
+                sheet_name=safe_sheet_name(f"S_{metric}"),
+                index=False,
+            )
+
+        trial_exports = [
+            ("OverallRolling", trials_df, "RollingAccuracy", "Trial"),
+            (
+                "RegularRolling",
+                trials_df[trials_df["TrialType"].eq("Regular")],
+                "TypeRollingAccuracy",
+                "TypeTrial",
+            ),
+            (
+                "StopRolling",
+                trials_df[trials_df["TrialType"].eq("Stop")],
+                "TypeRollingAccuracy",
+                "TypeTrial",
+            ),
+            (
+                "Regular_L_to_R",
+                trials_df[trials_df["Outcome"].eq("RegularCorrect")],
+                "RightResponseLatency_s",
+                "TypeTrial",
+            ),
+            (
+                "Regular_R_to_P",
+                trials_df[trials_df["Outcome"].eq("RegularCorrect")],
+                "PelletDeliveryLatency_s",
+                "TypeTrial",
+            ),
+            (
+                "Stop_N_to_P",
+                trials_df[trials_df["Outcome"].eq("StopCorrect")],
+                "PelletDeliveryLatency_s",
+                "TypeTrial",
+            ),
+            (
+                "Stop_L_to_R",
+                trials_df[trials_df["Outcome"].eq("StopIncorrect")],
+                "RightResponseLatency_s",
+                "TypeTrial",
+            ),
+            (
+                "CumNextTrialInit",
+                trials_df,
+                "CumulativeAvailableInitiationLatency_s",
+                "Trial",
+            ),
+            (
+                "CumMeanNextTrialInit",
+                trials_df,
+                "CumulativeMeanAvailableInitiationLatency_s",
+                "Trial",
+            ),
+        ]
+
+        for name, data, metric, index_col in trial_exports:
+            table = prism_trial_table(
+                data,
+                metric,
+                index_col,
+                mouse_col,
+                sex_col,
+                group_col,
+            )
+            if not table.empty:
+                table.to_excel(
+                    writer,
+                    sheet_name=safe_sheet_name(f"T_{name}"),
+                    index=True,
+                )
+
+        if use_phase:
+            phase_initiation_exports = [
+                (
+                    "CumNextInit",
+                    "PhaseCumulativeAvailableInitiationLatency_s",
+                ),
+                (
+                    "CumMeanNextInit",
+                    "PhaseCumulativeMeanAvailableInitiationLatency_s",
+                ),
+            ]
+            for phase in ["Dark", "Light"]:
+                phase_trials = trials_df[trials_df["Phase"].eq(phase)]
+                for short_name, metric in phase_initiation_exports:
+                    table = prism_trial_table(
+                        phase_trials,
+                        metric,
+                        "PhaseTrial",
+                        mouse_col,
+                        sex_col,
+                        group_col,
+                    )
+                    if table.empty:
+                        continue
+                    table.to_excel(
+                        writer,
+                        sheet_name=safe_sheet_name(
+                            f"T_{short_name}_{phase}"
+                        ),
+                        index=True,
+                    )
+
+        if not peri_stop_df.empty:
+            peri_metrics = [
+                ("RegularAccuracy", "Accuracy"),
+                ("RegularCorrectRT_s", "Regular_L_to_R"),
+                ("AvailableInitiationLatency_s", "NextTrialInit"),
+            ]
+            anchor_groups = [
+                ("AllStop", peri_stop_df),
+                (
+                    "StopSuccess",
+                    peri_stop_df[
+                        peri_stop_df["AnchorCategory"].eq("Stop Success")
+                    ],
+                ),
+                (
+                    "StopError",
+                    peri_stop_df[
+                        peri_stop_df["AnchorCategory"].eq("Stop Error")
+                    ],
+                ),
+            ]
+
+            for anchor_name, anchor_data in anchor_groups:
+                for metric, metric_name in peri_metrics:
+                    table = prism_trial_table(
+                        anchor_data,
+                        metric,
+                        "RelativeTrial",
+                        mouse_col,
+                        sex_col,
+                        group_col,
+                    )
+                    if table.empty:
+                        continue
+                    table.to_excel(
+                        writer,
+                        sheet_name=safe_sheet_name(
+                            f"Peri_{anchor_name}_{metric_name}"
+                        ),
+                        index=True,
+                    )
+
+
+# ------------------------------------------------------------
+# PLOT FILE, COLOUR, AND DISPLAY HELPERS
+# ------------------------------------------------------------
+PLOT_LINEWIDTH = 2.5
+PLOT_SEM_ALPHA = 0.18
+STRIPPLOT_SIZE = 7
+
+
+def safe_filename_value(value):
+    safe = str(value).strip()
+    for character in '<>:"/\\|?*[]':
+        safe = safe.replace(character, "_")
+    return safe.replace(" ", "_").replace("\n", "").replace("\r", "")
+
+
+def build_plot_filename(
+    metric,
+    grouping_col=None,
+    subset_col=None,
+    subset_value=None,
+    phase=None,
+):
+    parts = [safe_filename_value(metric)]
+
+    if subset_col is not None and subset_value is not None:
+        parts.append(
+            f"{safe_filename_value(subset_col)}_"
+            f"{safe_filename_value(subset_value)}"
+        )
+
+    if grouping_col is not None:
+        parts.append(f"By_{safe_filename_value(grouping_col)}")
+
+    if phase is not None:
+        parts.append(safe_filename_value(phase))
+
+    return "__".join(parts) + ".png"
+
+
+def get_plot_path(plot_folder, filename):
     filename_lower = filename.lower()
 
-    if filename.startswith("Stacked_"):
-        return "Stacked"
-    if "heatmap" in filename_lower:
-        return "Heatmaps"
-    if filename_lower.endswith("__dark_exclusive.png"):
-        return "Dark_Exclusive"
-    if filename_lower.endswith("__light_exclusive.png"):
-        return "Light_Exclusive"
-    if filename_lower.endswith("__dark.png"):
-        return "Dark"
-    if filename_lower.endswith("__light.png"):
-        return "Light"
+    if filename_lower.startswith("pca_") or "correlation" in filename_lower:
+        subfolder = "PCA"
+    elif filename_lower.startswith("stacked_"):
+        subfolder = "Stacked"
+    elif filename_lower.startswith("peristop_"):
+        subfolder = "PeriStop"
+    elif filename_lower.endswith("__dark.png"):
+        subfolder = "Dark"
+    elif filename_lower.endswith("__light.png"):
+        subfolder = "Light"
+    else:
+        subfolder = "All"
 
-    return "All"
+    destination = os.path.join(plot_folder, subfolder)
+    os.makedirs(destination, exist_ok=True)
+    return os.path.join(destination, filename)
 
-def get_plot_path(filename):
-
-    subfolder = get_plot_subfolder(filename)
-    folder = os.path.join(plots_folder, subfolder)
-
-    if not os.path.exists(folder):
-        os.makedirs(folder)
-
-    return os.path.join(folder, filename)
 
 def build_color_map(values):
-
-    if len(values) == 0:
+    values = sorted({str(value) for value in values if pd.notna(value)})
+    if not values:
         return {}
 
-    palette = sns.color_palette("tab10", n_colors=len(values)).as_hex()
+    colors = sns.color_palette("tab10", n_colors=len(values)).as_hex()
+    return {value: colors[index] for index, value in enumerate(values)}
 
-    return {
-        str(value): palette[i]
-        for i, value in enumerate(values)
+
+def configure_plot_colors(metadata_df, group_col, sex_col, use_custom_colors):
+    group_values = metadata_df[group_col].dropna().astype(str).unique()
+    sex_values = metadata_df[sex_col].dropna().astype(str).unique()
+    combined_values = (
+        metadata_df[sex_col].astype(str)
+        + " x "
+        + metadata_df[group_col].astype(str)
+    ).unique()
+
+    color_maps = {
+        group_col: build_color_map(group_values),
+        sex_col: build_color_map(sex_values),
+        "Combined_Group": build_color_map(combined_values),
     }
 
-def get_plot_color(grp, grouping_col):
+    if use_custom_colors:
+        for value in sorted(group_values):
+            color = colorchooser.askcolor(
+                title=f"Choose colour for {value}"
+            )[1]
+            if color is not None:
+                color_maps[group_col][str(value)] = color
 
-    key = str(grp)
+        for value in sorted(sex_values):
+            color = colorchooser.askcolor(
+                title=f"Choose colour for {value}"
+            )[1]
+            if color is not None:
+                color_maps[sex_col][str(value)] = color
 
-    if grouping_col == group_col:
-        return group_colors.get(key, None)
-    if grouping_col == sex_col:
-        return sex_colors.get(key, None)
+    return color_maps
 
-    return None
 
-def get_plot_palette(grouping_col):
+def get_plot_color(value, grouping_col, color_maps):
+    return color_maps.get(grouping_col, {}).get(str(value))
 
-    if grouping_col == group_col:
-        return group_colors if len(group_colors) > 0 else None
-    if grouping_col == sex_col:
-        return sex_colors if len(sex_colors) > 0 else None
 
-    return None
+def finish_plot(figure, plot_path, show_plots):
+    figure.savefig(plot_path, dpi=300, bbox_inches="tight")
+    if show_plots:
+        plt.show()
+    else:
+        plt.close(figure)
 
 
 # ------------------------------------------------------------
 # CORE PLOTTING FUNCTIONS
 # ------------------------------------------------------------
-
-def plot_trial_trajectory(data, metric, group_col_plot, title, filename, ylabel=None, x_col="Trial"):
-
-    if data.empty or metric not in data.columns:
-        return
-
-    plot_x_col = x_col if x_col in data.columns else "Trial"
-
-    plt.figure(figsize=(9, 6))
-
-    for grp, d in data.groupby(group_col_plot):
-        color = get_plot_color(grp, group_col_plot)
-
-        mean = d.groupby(plot_x_col)[metric].mean()
-        sem = d.groupby(plot_x_col)[metric].sem().fillna(0)
-
-        plt.plot(
-            mean.index,
-            mean.values,
-            label=grp,
-            linewidth=PLOT_LINEWIDTH,
-            color=color
-        )
-
-        plt.fill_between(
-            mean.index,
-            mean - sem,
-            mean + sem,
-            alpha=PLOT_SEM_ALPHA,
-            color=color
-        )
-
-    if plot_x_col == "PhaseTrial":
-        x_label = "PhaseTrial (EndPhase-based)"
-    elif plot_x_col == "ExclusivePhaseTrial":
-        x_label = "ExclusivePhaseTrial (StartPhase = EndPhase)"
-    else:
-        x_label = plot_x_col
-
-    plt.xlabel(x_label)
-    plt.ylabel(ylabel if ylabel else metric)
-    plt.title(title)
-    plt.legend()
-
-    plot_path = get_plot_path(filename)
-    plt.savefig(plot_path, dpi=300, bbox_inches="tight")
-
-    if show_plots:
-        plt.show()
-    else:
-        plt.close()
-
-def plot_demand(data, metric, group_col_plot, title, filename, ylabel=None):
-
-    if data.empty or metric not in data.columns:
-        return
-
-    plt.figure(figsize=(9, 6))
-
-    for grp, d in data.groupby(group_col_plot):
-        color = get_plot_color(grp, group_col_plot)
-
-        mean = d.groupby("FR")[metric].mean()
-        sem = d.groupby("FR")[metric].sem().fillna(0)
-
-        plt.plot(
-            mean.index,
-            mean.values,
-            label=grp,
-            marker="o",
-            markersize=DEMAND_MARKERSIZE,
-            markeredgewidth=0,
-            linewidth=PLOT_LINEWIDTH,
-            color=color
-        )
-        plt.fill_between(
-            mean.index,
-            mean - sem,
-            mean + sem,
-            alpha=PLOT_SEM_ALPHA,
-            color=color
-        )
-
-    plt.xlabel("FR")
-    plt.ylabel(ylabel if ylabel else metric)
-    plt.title(title)
-    plt.legend()
-
-    plot_path = get_plot_path(filename)
-    plt.savefig(plot_path, dpi=300, bbox_inches="tight")
-
-    if show_plots:
-        plt.show()
-    else:
-        plt.close()
-
-def plot_summary_stripplot(data, metric, x_col, title, filename, hue_col=None):
-
-    required_columns = [metric, x_col]
-
-    if hue_col:
-        required_columns.append(hue_col)
-
-    missing_columns = [
-        column for column in required_columns
-        if column not in data.columns
-    ]
-
-    if missing_columns:
-        print(
-            f"Skipping {filename}: missing columns "
-            f"{', '.join(missing_columns)}."
-        )
-        return
-
-    plot_data = data.copy()
-    plot_data[metric] = pd.to_numeric(plot_data[metric], errors="coerce")
-    plot_data = plot_data.dropna(subset=required_columns)
-
-    if plot_data.empty or plot_data[x_col].nunique() == 0:
-        print(f"Skipping {filename}: no valid data to plot.")
-        return
-
-    if hue_col and plot_data[hue_col].nunique() == 0:
-        print(f"Skipping {filename}: no valid {hue_col} values to plot.")
-        return
-
-    plt.figure(figsize=(8, 6))
-
-    palette_col = hue_col if hue_col else x_col
-    palette = get_plot_palette(palette_col)
-    hide_legend = False
-
-    strip_kwargs = {
-        "data": plot_data,
-        "x": x_col,
-        "y": metric,
-        "dodge": True if hue_col else False,
-        "size": STRIPPLOT_SIZE
-    }
-
-    if hue_col:
-        strip_kwargs["hue"] = hue_col
-        strip_kwargs["palette"] = palette
-    elif palette is not None:
-        strip_kwargs["hue"] = x_col
-        strip_kwargs["palette"] = palette
-        hide_legend = True
-
-    axis = sns.stripplot(**strip_kwargs)
-
-    if hide_legend:
-        legend = axis.get_legend()
-        if legend is not None:
-            legend.remove()
-
-    plt.title(title)
-    plt.ylabel(metric)
-
-    if x_col == "Combined_Group":
-        plt.xticks(rotation=45)
-
-    plot_path = get_plot_path(filename)
-    plt.savefig(plot_path, dpi=300, bbox_inches="tight")
-
-    if show_plots:
-        plt.show()
-    else:
-        plt.close()
-
-def format_heatmap_cell(x):
-
-    if pd.isna(x):
-        return ""
-
-    ax = abs(float(x))
-
-    if ax >= 100:
-        return f"{x:.0f}"
-    elif ax >= 10:
-        return f"{x:.1f}"
-    else:
-        return f"{x:.2f}"
-
-def plot_group_sex_heatmap(data, title, filename):
-
-    heatmap_metrics = [
-        "TotalPellets",
-        "TotalPokes",
-        "ActivePokes",
-        "InactivePokes",
-        "Accuracy",
-        "InactivePokePercent",
-        "PokesPerPellet",
-        "PelletsPerHour",
-        "FinalFR",
-        "MaxFR",
-        "MeanTrialDuration_min",
-        "MeanVigor",
-        "MeanTotalPokeRate",
-        "MeanInactivePokeRate",
-        "MeanInactivePokePercent",
-        "MeanRetrievalTime"
-    ]
-
-    heatmap_metrics = [
-        m for m in heatmap_metrics
-        if m in data.columns
-    ]
-
-    if len(heatmap_metrics) == 0:
-        return
-
-    grouped = (
-        data
-        .groupby([group_col, sex_col], dropna=False)[heatmap_metrics]
-        .mean()
-    )
-
-    if grouped.empty:
-        return
-
-    grouped.index = [
-        f"{group} | {sex}"
-        for group, sex in grouped.index
-    ]
-
-    annot_data = grouped.applymap(format_heatmap_cell)
-    heatmap_scaled = grouped.copy()
-
-    for col in heatmap_scaled.columns:
-        col_min = heatmap_scaled[col].min()
-        col_max = heatmap_scaled[col].max()
-
-        if pd.isna(col_min) or pd.isna(col_max):
-            heatmap_scaled[col] = 0
-        elif col_max == col_min:
-            heatmap_scaled[col] = 0.5
-        else:
-            heatmap_scaled[col] = (
-                (heatmap_scaled[col] - col_min)
-                / (col_max - col_min)
-            )
-
-    fig_width = max(12, len(heatmap_scaled.columns) * 0.9)
-    fig_height = max(4, len(heatmap_scaled.index) * 0.7)
-
-    plt.figure(figsize=(fig_width, fig_height))
-
-    sns.heatmap(
-        heatmap_scaled,
-        annot=annot_data,
-        fmt="",
-        cmap="Blues",
-        linewidths=0.5,
-        linecolor="gray",
-        cbar=True
-    )
-
-    plt.title(title)
-    plt.xlabel("")
-    plt.ylabel("")
-    plt.xticks(rotation=60, ha="right")
-    plt.yticks(rotation=0)
-
-    plot_path = get_plot_path(filename)
-    plt.savefig(plot_path, dpi=300, bbox_inches="tight")
-
-    if show_plots:
-        plt.show()
-    else:
-        plt.close()
-
-def add_dark_shading(ax, x_min, x_max):
-
-    if not use_phase:
-        return
-
-    start_time = pd.to_datetime(light_start).time()
-    end_time = pd.to_datetime(light_end).time()
-
-    x_min = pd.to_datetime(x_min)
-    x_max = pd.to_datetime(x_max)
-
-    if pd.isna(x_min) or pd.isna(x_max):
-        return
-
-    first_day = x_min.normalize() - pd.Timedelta(days=1)
-    last_day = x_max.normalize() + pd.Timedelta(days=1)
-
-    for day in pd.date_range(first_day, last_day, freq="D"):
-
-        midnight = day
-        next_midnight = day + pd.Timedelta(days=1)
-        light_start_dt = pd.Timestamp.combine(day.date(), start_time)
-        light_end_dt = pd.Timestamp.combine(day.date(), end_time)
-
-        if start_time < end_time:
-            dark_intervals = [
-                (midnight, light_start_dt),
-                (light_end_dt, next_midnight)
-            ]
-        else:
-            dark_intervals = [
-                (light_end_dt, light_start_dt)
-            ]
-
-        for dark_start, dark_end in dark_intervals:
-
-            if dark_end < x_min or dark_start > x_max:
-                continue
-
-            ax.axvspan(
-                dark_start,
-                dark_end,
-                color="gray",
-                alpha=0.18,
-                zorder=0
-            )
-
-def plot_stacked_individual_timecourse(
+def plot_group_trajectory(
     data,
-    metric,
-    ylabel,
+    x_col,
+    y_col,
+    grouping_col,
     title,
+    ylabel,
     filename,
-    color_by_value=False
+    plot_folder,
+    color_maps,
+    show_plots,
+    y_limits=None,
+    vertical_line=None,
 ):
-
-    if data.empty or metric not in data.columns or "EndTime" not in data.columns:
+    required = [x_col, y_col, grouping_col, "_Mouse"]
+    if data.empty or any(column not in data.columns for column in required):
         return
 
-    plot_data = data.copy()
-    plot_data["EndTime"] = pd.to_datetime(
-        plot_data["EndTime"],
-        errors="coerce"
-    )
-
-    plot_data = plot_data.dropna(subset=["EndTime", metric])
-
+    plot_data = data.dropna(subset=required).copy()
     if plot_data.empty:
         return
 
-    if "StartTime" in plot_data.columns:
-        plot_data["StartTime"] = pd.to_datetime(
-            plot_data["StartTime"],
-            errors="coerce"
+    figure, axis = plt.subplots(figsize=(9, 6))
+
+    for group, group_data in plot_data.groupby(grouping_col, sort=True):
+        per_mouse = (
+            group_data.groupby(["_Mouse", x_col], as_index=False)[y_col]
+            .mean()
         )
-    else:
-        plot_data["StartTime"] = pd.NaT
+        grouped = per_mouse.groupby(x_col)[y_col]
+        mean = grouped.mean()
+        sem = grouped.sem().fillna(0)
+        color = get_plot_color(group, grouping_col, color_maps)
 
-    def format_sex_label(value):
+        axis.plot(
+            mean.index,
+            mean.values,
+            color=color,
+            linewidth=PLOT_LINEWIDTH,
+            label=group,
+        )
+        axis.fill_between(
+            mean.index,
+            mean - sem,
+            mean + sem,
+            color=color,
+            alpha=PLOT_SEM_ALPHA,
+        )
 
-        if pd.isna(value):
-            return ""
-
-        label = str(value).strip()
-        label_lower = label.lower()
-
-        if label_lower.startswith("female"):
-            return "F"
-        if label_lower.startswith("male"):
-            return "M"
-
-        return label
-
-    mouse_order = (
-        plot_data[
-            [mouse_col, sex_col, group_col]
-        ]
-        .drop_duplicates(subset=[mouse_col])
-        .copy()
+    x_labels = {
+        "Trial": "Trial",
+        "TypeTrial": "Trial within Trial Type",
+        "PhaseTrial": "Phase Trial",
+        "PhaseTypeTrial": "Phase Trial within Trial Type",
+        "RelativeTrial": "Trials around Stop",
+    }
+    axis.set_xlabel(x_labels.get(x_col, x_col))
+    axis.set_ylabel(ylabel)
+    axis.set_title(title)
+    if y_limits is not None:
+        axis.set_ylim(*y_limits)
+    if vertical_line is not None:
+        axis.axvline(vertical_line, color="black", linestyle="--", linewidth=1.5)
+    axis.legend(frameon=True)
+    sns.despine(ax=axis)
+    figure.tight_layout()
+    finish_plot(
+        figure,
+        get_plot_path(plot_folder, filename),
+        show_plots,
     )
 
-    mouse_order["_Mouse_str"] = mouse_order[mouse_col].astype(str)
-    mouse_order["_Mouse_num"] = pd.to_numeric(
-        mouse_order["_Mouse_str"],
-        errors="coerce"
-    )
 
-    mouse_order = mouse_order.sort_values(
-        by=[sex_col, group_col, "_Mouse_num", "_Mouse_str"],
-        na_position="last"
-    )
+def plot_summary_metric(
+    data,
+    metric,
+    x_col,
+    title,
+    filename,
+    plot_folder,
+    color_maps,
+    show_plots,
+    hue_col=None,
+):
+    required = [metric, x_col]
+    if hue_col is not None:
+        required.append(hue_col)
 
-    mice = mouse_order["_Mouse_str"].tolist()
-
-    mouse_labels = {}
-
-    for _, row in mouse_order.iterrows():
-
-        mouse = row["_Mouse_str"]
-        sex_label = format_sex_label(row[sex_col])
-        group_label = "" if pd.isna(row[group_col]) else str(row[group_col]).strip()
-
-        label_parts = [
-            part for part in [mouse, sex_label, group_label]
-            if part != ""
-        ]
-
-        mouse_labels[mouse] = " | ".join(label_parts)
-
-    if len(mice) == 0:
+    if data.empty or any(column not in data.columns for column in required):
         return
 
-    def get_previous_light_anchor(timestamp):
+    plot_data = data.dropna(subset=required).copy()
+    if plot_data.empty:
+        return
 
-        if not use_phase:
-            return timestamp
-
-        light_start_time = pd.to_datetime(light_start).time()
-        anchor = pd.Timestamp.combine(timestamp.date(), light_start_time)
-
-        if anchor > timestamp:
-            anchor = anchor - pd.Timedelta(days=1)
-
-        return anchor
-
-    cycle_anchors = {}
-
-    for mouse in mice:
-
-        d_mouse = plot_data[
-            plot_data[mouse_col].astype(str).eq(str(mouse))
-        ]
-
-        if d_mouse["StartTime"].notna().any():
-            session_start = d_mouse["StartTime"].min()
-        else:
-            session_start = d_mouse["EndTime"].min()
-
-        cycle_anchor = get_previous_light_anchor(session_start)
-        cycle_anchors[str(mouse)] = cycle_anchor
-
-        plot_data.loc[
-            plot_data[mouse_col].astype(str).eq(str(mouse)),
-            "SessionDay"
-        ] = (
-            plot_data.loc[
-                plot_data[mouse_col].astype(str).eq(str(mouse)),
-                "EndTime"
-            ] - cycle_anchor
-        ).dt.total_seconds() / 86400
-
-    x_min = 0
-    x_max = plot_data["SessionDay"].max()
-
-    if pd.isna(x_max) or x_max <= 0:
-        x_max = 1
-
-    x_axis_label = (
-        "Days from light-cycle anchor"
-        if use_phase else
-        "Days from session start"
+    palette_col = hue_col if hue_col is not None else x_col
+    palette = color_maps.get(palette_col)
+    plot_hue = hue_col if hue_col is not None else x_col
+    figure, axis = plt.subplots(figsize=(8, 6))
+    sns.stripplot(
+        data=plot_data,
+        x=x_col,
+        y=metric,
+        hue=plot_hue,
+        dodge=hue_col is not None,
+        jitter=0.16,
+        size=STRIPPLOT_SIZE,
+        palette=palette,
+        ax=axis,
     )
 
-    y_max = plot_data[metric].max()
-
-    if pd.isna(y_max) or y_max <= 0:
-        y_max = 1
-
-    def add_relative_dark_shading(ax, d_mouse):
-
-        if not use_phase:
-            return
-
-        mouse = str(d_mouse[mouse_col].iloc[0])
-        cycle_anchor = cycle_anchors.get(mouse)
-
-        if cycle_anchor is None or pd.isna(cycle_anchor):
-            return
-
-        start_time = pd.to_datetime(light_start).time()
-        end_time = pd.to_datetime(light_end).time()
-
-        actual_min = d_mouse["EndTime"].min()
-        actual_max = d_mouse["EndTime"].max()
-
-        if pd.isna(actual_min) or pd.isna(actual_max):
-            return
-
-        first_day = actual_min.normalize() - pd.Timedelta(days=1)
-        last_day = actual_max.normalize() + pd.Timedelta(days=1)
-
-        for day in pd.date_range(first_day, last_day, freq="D"):
-
-            midnight = day
-            next_midnight = day + pd.Timedelta(days=1)
-            light_start_dt = pd.Timestamp.combine(day.date(), start_time)
-            light_end_dt = pd.Timestamp.combine(day.date(), end_time)
-
-            if start_time < end_time:
-                dark_intervals = [
-                    (midnight, light_start_dt),
-                    (light_end_dt, next_midnight)
-                ]
-            else:
-                dark_intervals = [
-                    (light_end_dt, light_start_dt)
-                ]
-
-            for dark_start, dark_end in dark_intervals:
-
-                if dark_end < actual_min or dark_start > actual_max:
-                    continue
-
-                rel_start = (dark_start - cycle_anchor).total_seconds() / 86400
-                rel_end = (dark_end - cycle_anchor).total_seconds() / 86400
-
-                ax.axvspan(
-                    max(rel_start, x_min),
-                    min(rel_end, x_max),
-                    color="gray",
-                    alpha=0.18,
-                    zorder=0
-                )
-
-    def draw_mouse_timecourse(ax, d_mouse):
-
-        add_relative_dark_shading(ax, d_mouse)
-
-        if color_by_value:
-            ax.scatter(
-                d_mouse["SessionDay"],
-                d_mouse[metric],
-                c=d_mouse[metric],
-                cmap="spring",
-                s=10,
-                alpha=0.65,
-                linewidths=0,
-                zorder=2
-            )
-        else:
-            group_value = d_mouse[group_col].iloc[0]
-            color = get_plot_color(group_value, group_col)
-
-            ax.plot(
-                d_mouse["SessionDay"],
-                d_mouse[metric],
-                color=color,
-                linewidth=1.0,
-                alpha=0.85,
-                zorder=2
-            )
-
-            ax.scatter(
-                d_mouse["SessionDay"],
-                d_mouse[metric],
-                color=color,
-                s=8,
-                alpha=0.75,
-                linewidths=0,
-                zorder=3
-            )
-
-        ax.set_ylim(-0.05 * y_max, y_max * 1.05)
-        ax.set_xlim(x_min, x_max)
-
-    fig_height = max(5, len(mice) * 0.75)
-
-    fig, axes = plt.subplots(
-        len(mice),
-        1,
-        figsize=(14, fig_height),
-        sharex=True
+    if hue_col is None:
+        legend = axis.get_legend()
+        if legend is not None:
+            legend.remove()
+    axis.set_title(title)
+    sns.despine(ax=axis)
+    figure.tight_layout()
+    finish_plot(
+        figure,
+        get_plot_path(plot_folder, filename),
+        show_plots,
     )
-
-    if len(mice) == 1:
-        axes = [axes]
-
-    previous_group_key = None
-
-    for ax, mouse in zip(axes, mice):
-
-        d_mouse = plot_data[
-            plot_data[mouse_col].astype(str).eq(str(mouse))
-        ].sort_values("EndTime")
-
-        sex_value = d_mouse[sex_col].iloc[0]
-        group_value = d_mouse[group_col].iloc[0]
-        group_key = (str(sex_value), str(group_value))
-
-        draw_mouse_timecourse(ax, d_mouse)
-
-        ax.set_ylabel(
-            mouse_labels.get(str(mouse), str(mouse)),
-            rotation=0,
-            ha="right",
-            va="center",
-            labelpad=56,
-            fontsize=8
-        )
-
-        if previous_group_key is None:
-            ax.spines["top"].set_visible(False)
-        elif group_key != previous_group_key:
-            ax.spines["top"].set_visible(True)
-            ax.spines["top"].set_linewidth(1.4)
-            ax.spines["top"].set_color("black")
-        else:
-            ax.spines["top"].set_visible(False)
-
-        ax.spines["right"].set_visible(False)
-
-        previous_group_key = group_key
-
-        if ax is not axes[-1]:
-            ax.tick_params(labelbottom=False)
-
-    axes[-1].set_xlabel(x_axis_label)
-    axes[-1].set_xticks(np.arange(np.floor(x_min), np.ceil(x_max) + 1, 1))
-
-    fig.text(
-        0.02,
-        0.5,
-        ylabel,
-        rotation="vertical",
-        va="center"
-    )
-
-    fig.suptitle(title, y=0.995)
-    fig.tight_layout(rect=[0.04, 0, 1, 0.98])
-
-    plot_path = get_plot_path(filename)
-    fig.savefig(plot_path, dpi=300, bbox_inches="tight")
-
-    if show_plots:
-        plt.show()
-    else:
-        plt.close(fig)
-
-    if save_individual_timecourse_plots:
-
-        base_filename = os.path.splitext(filename)[0]
-
-        for mouse in mice:
-
-            d_mouse = plot_data[
-                plot_data[mouse_col].astype(str).eq(str(mouse))
-            ].sort_values("EndTime")
-
-            if d_mouse.empty:
-                continue
-
-            fig_ind, ax_ind = plt.subplots(figsize=(10, 5))
-            draw_mouse_timecourse(ax_ind, d_mouse)
-
-            ax_ind.set_title(
-                f"{title} - {mouse_labels.get(str(mouse), str(mouse))}"
-            )
-            ax_ind.set_xlabel(x_axis_label)
-            ax_ind.set_ylabel(ylabel)
-            ax_ind.spines["top"].set_visible(False)
-            ax_ind.spines["right"].set_visible(False)
-            ax_ind.set_xlim(x_min, x_max)
-            ax_ind.set_xticks(np.arange(np.floor(x_min), np.ceil(x_max) + 1, 1))
-            fig_ind.tight_layout()
-
-            individual_path = get_plot_path(
-                f"{base_filename}_{safe_filename_value(mouse)}.png"
-            )
-
-            fig_ind.savefig(individual_path, dpi=300, bbox_inches="tight")
-
-            if show_plots:
-                plt.show()
-            else:
-                plt.close(fig_ind)
 
 
 # ------------------------------------------------------------
-# REUSABLE PLOT VARIANT HELPERS
+# REUSABLE GRAPH-VARIANT GENERATORS
 # ------------------------------------------------------------
-
-def safe_filename_value(value):
-
-    return (
-        str(value)
-        .strip()
-        .replace(" ", "_")
-        .replace("/", "_")
-        .replace("\\", "_")
-        .replace(":", "_")
-        .replace("*", "_")
-        .replace("?", "_")
-        .replace('"', "_")
-        .replace("<", "_")
-        .replace(">", "_")
-        .replace("|", "_")
-        .replace("[", "_")
-        .replace("]", "_")
-        .replace("\n", "")
-        .replace("\r", "")
+def add_combined_group(data, sex_col, group_col):
+    combined = data.copy()
+    valid = combined[sex_col].notna() & combined[group_col].notna()
+    combined["Combined_Group"] = pd.Series(
+        pd.NA,
+        index=combined.index,
+        dtype="object",
     )
+    combined.loc[valid, "Combined_Group"] = (
+        combined.loc[valid, sex_col].astype(str)
+        + " x "
+        + combined.loc[valid, group_col].astype(str)
+    )
+    combined[sex_col] = combined[sex_col].map(
+        lambda value: str(value) if pd.notna(value) else np.nan
+    )
+    combined[group_col] = combined[group_col].map(
+        lambda value: str(value) if pd.notna(value) else np.nan
+    )
+    return combined
 
-def build_plot_filename(metric, group_col_plot=None, subset_col=None,
-                        subset_value=None, phase=None, exclusive=False):
 
-    parts = [safe_filename_value(metric)]
-
-    if subset_col is not None and subset_value is not None:
-        parts.append(
-            f"{safe_filename_value(subset_col)}_{safe_filename_value(subset_value)}"
-        )
-
-    if group_col_plot is not None:
-        parts.append(f"By_{safe_filename_value(group_col_plot)}")
-
-    if phase is not None:
-        phase_part = safe_filename_value(phase)
-
-        if exclusive:
-            phase_part = f"{phase_part}_Exclusive"
-
-        parts.append(phase_part)
-
-    return "__".join(parts) + ".png"
-
-def plot_split_second_third(
+def generate_trajectory_variants(
     data,
-    split_col,
-    compare_col,
-    plot_func,
     metric_name,
-    title_prefix=None
+    title_prefix,
+    x_col,
+    y_col,
+    ylabel,
+    mouse_col,
+    sex_col,
+    group_col,
+    phase,
+    plot_folder,
+    color_maps,
+    show_plots,
+    y_limits=None,
+    vertical_line=None,
 ):
-
     if data.empty:
         return
 
-    display_prefix = title_prefix if title_prefix is not None else metric_name
+    plot_data = add_combined_group(data, sex_col, group_col)
+    plot_data["_Mouse"] = plot_data[mouse_col].astype(str)
+    phase_title = f", {phase}" if phase is not None else ""
 
-    for val in sorted(data[split_col].dropna().unique()):
-
-        subset = data[data[split_col] == val]
-
-        if subset[compare_col].nunique() < 2:
-            print(f"Skipping {val} - only one group in {compare_col}")
-            continue
-
-        plot_func(
-            subset,
-            group_col_plot=compare_col,
-            title=f"{display_prefix} ({compare_col} within {split_col} = {val})",
-            filename=build_plot_filename(
+    for grouping_col in [group_col, sex_col, "Combined_Group"]:
+        plot_group_trajectory(
+            plot_data,
+            x_col,
+            y_col,
+            grouping_col,
+            f"{title_prefix} (by {grouping_col}{phase_title})",
+            ylabel,
+            build_plot_filename(
                 metric_name,
-                group_col_plot=compare_col,
-                subset_col=split_col,
-                subset_value=val
-            )
+                grouping_col=grouping_col,
+                phase=phase,
+            ),
+            plot_folder,
+            color_maps,
+            show_plots,
+            y_limits,
+            vertical_line,
         )
 
-def plot_split_second_third_phase(
-    data,
-    split_col,
-    compare_col,
-    plot_func,
-    metric_name,
-    title_prefix=None,
-    x_col="PhaseTrial",
-    exclusive=False
-):
-
-    if data.empty or "Phase" not in data.columns:
-        print(f"Skipping {metric_name}: no Phase column available.")
-        return
-
-    display_prefix = title_prefix if title_prefix is not None else metric_name
-
-    for phase, d_phase in data.groupby("Phase"):
-
-        for val in sorted(d_phase[split_col].dropna().unique()):
-
-            subset = d_phase[d_phase[split_col] == val]
-
-            if subset[compare_col].nunique() < 2:
-                print(f"Skipping {val} ({phase}) - only one group in {compare_col}")
-                continue
-
-            plot_func(
+    for split_col, compare_col in [
+        (sex_col, group_col),
+        (group_col, sex_col),
+    ]:
+        for value in sorted(plot_data[split_col].dropna().unique()):
+            subset = plot_data[plot_data[split_col].eq(value)]
+            plot_group_trajectory(
                 subset,
-                group_col_plot=compare_col,
-                title=f"{display_prefix} ({compare_col} within {split_col} = {val}, {phase})",
-                filename=build_plot_filename(
-                    metric_name,
-                    group_col_plot=compare_col,
-                    subset_col=split_col,
-                    subset_value=val,
-                    phase=phase,
-                    exclusive=exclusive
+                x_col,
+                y_col,
+                compare_col,
+                (
+                    f"{title_prefix} ({compare_col} within "
+                    f"{split_col} = {value}{phase_title})"
                 ),
-                x_col=x_col
+                ylabel,
+                build_plot_filename(
+                    metric_name,
+                    grouping_col=compare_col,
+                    subset_col=split_col,
+                    subset_value=value,
+                    phase=phase,
+                ),
+                plot_folder,
+                color_maps,
+                show_plots,
+                y_limits,
+                vertical_line,
             )
 
-def plot_split_second_third_demand_phase(
-    data,
-    split_col,
-    compare_col,
-    plot_func,
-    metric_name,
-    title_prefix=None,
-    exclusive=False
-):
 
-    if data.empty or "Phase" not in data.columns:
-        print(f"Skipping {metric_name}: no Phase column available.")
+def generate_summary_variants(
+    data,
+    metric,
+    title_prefix,
+    sex_col,
+    group_col,
+    phase,
+    plot_folder,
+    color_maps,
+    show_plots,
+):
+    if data.empty or metric not in data.columns:
         return
 
-    display_prefix = title_prefix if title_prefix is not None else metric_name
+    plot_data = add_combined_group(data, sex_col, group_col)
+    phase_title = f", {phase}" if phase is not None else ""
 
-    for phase, d_phase in data.groupby("Phase"):
+    direct_specs = [
+        (group_col, sex_col, f"{group_col}_{sex_col}"),
+        (sex_col, group_col, f"{sex_col}_{group_col}"),
+        ("Combined_Group", None, "Combined_Group"),
+    ]
 
-        for val in sorted(d_phase[split_col].dropna().unique()):
+    for x_col, hue_col, grouping_name in direct_specs:
+        plot_summary_metric(
+            plot_data,
+            metric,
+            x_col,
+            f"{title_prefix} (by {grouping_name}{phase_title})",
+            build_plot_filename(
+                f"Summary_{metric}",
+                grouping_col=grouping_name,
+                phase=phase,
+            ),
+            plot_folder,
+            color_maps,
+            show_plots,
+            hue_col=hue_col,
+        )
 
-            subset = d_phase[d_phase[split_col] == val]
-
-            if subset[compare_col].nunique() < 2:
-                print(f"Skipping {val} ({phase}) - only one group in {compare_col}")
-                continue
-
-            plot_func(
+    for split_col, compare_col in [
+        (sex_col, group_col),
+        (group_col, sex_col),
+    ]:
+        for value in sorted(plot_data[split_col].dropna().unique()):
+            subset = plot_data[plot_data[split_col].eq(value)]
+            plot_summary_metric(
                 subset,
-                group_col_plot=compare_col,
-                title=f"{display_prefix} ({compare_col} within {split_col} = {val}, {phase})",
-                filename=build_plot_filename(
-                    metric_name,
-                    group_col_plot=compare_col,
+                metric,
+                compare_col,
+                (
+                    f"{title_prefix} ({compare_col} within "
+                    f"{split_col} = {value}{phase_title})"
+                ),
+                build_plot_filename(
+                    f"Summary_{metric}",
+                    grouping_col=compare_col,
                     subset_col=split_col,
-                    subset_value=val,
+                    subset_value=value,
                     phase=phase,
-                    exclusive=exclusive
-                )
+                ),
+                plot_folder,
+                color_maps,
+                show_plots,
             )
+
+
+# ------------------------------------------------------------
+# TRIAL RASTER AND PCA PLOTS
+# ------------------------------------------------------------
+def format_sex_label(value):
+    text = str(value).strip()
+    return text[:1].upper() if text else ""
+
+
+def plot_stacked_trial_raster(
+    data,
+    x_col,
+    title,
+    filename,
+    plot_folder,
+    mouse_col,
+    sex_col,
+    group_col,
+    show_plots,
+    raster_mode="sequence",
+):
+    if raster_mode == "accuracy":
+        value_col = "Correct"
+        code_map = {0: 0, 1: 1}
+        colors = ["#FF0000", "#9ACD32"]
+        image_alpha = 1.0
+        legend_handles = [
+            Patch(color="#9ACD32", alpha=0.88, label="Correct"),
+            Patch(color="#FF0000", alpha=0.88, label="Incorrect"),
+        ]
+    else:
+        value_col = "Sequence"
+        code_map = {
+            "Regular LRP": 0,
+            "Regular LN": 1,
+            "Stop LNP": 2,
+            "Stop LR": 3,
+        }
+        colors = ["#14823B", "#A9DDB8", "#B3212D", "#F2AFB5"]
+        image_alpha = 1.0
+        legend_handles = [
+            Patch(color="#14823B", label="Regular LRP"),
+            Patch(color="#A9DDB8", label="Regular LN"),
+            Patch(color="#B3212D", label="Stop LNP"),
+            Patch(color="#F2AFB5", label="Stop LR"),
+        ]
+
+    required = [mouse_col, sex_col, group_col, x_col, value_col]
+    if data.empty or any(column not in data.columns for column in required):
+        return
+
+    plot_data = data.dropna(subset=[mouse_col, x_col, value_col]).copy()
+    if plot_data.empty:
+        return
+
+    mouse_order = (
+        plot_data[[mouse_col, sex_col, group_col]]
+        .drop_duplicates(subset=[mouse_col])
+        .sort_values([sex_col, group_col, mouse_col], kind="stable")
+    )
+    mice = mouse_order[mouse_col].tolist()
+    maximum_trial = int(plot_data[x_col].max())
+    matrix = np.full((len(mice), maximum_trial), np.nan)
+    for row_index, mouse in enumerate(mice):
+        mouse_data = plot_data[plot_data[mouse_col].eq(mouse)]
+        for _, trial in mouse_data.iterrows():
+            column_index = int(trial[x_col]) - 1
+            code = code_map.get(trial[value_col])
+            if 0 <= column_index < maximum_trial and code is not None:
+                matrix[row_index, column_index] = code
+
+    cmap = ListedColormap(colors)
+    cmap.set_bad("white")
+    figure_height = max(5, len(mice) * 0.35)
+    figure, axis = plt.subplots(figsize=(14, figure_height))
+    axis.imshow(
+        matrix,
+        aspect="auto",
+        interpolation="nearest",
+        cmap=cmap,
+        vmin=0,
+        vmax=len(colors) - 1,
+        alpha=image_alpha,
+    )
+
+    for row_boundary in np.arange(0.5, len(mice), 1):
+        axis.axhline(
+            row_boundary,
+            color="white",
+            linewidth=0.35,
+            alpha=0.65,
+        )
+
+    labels = []
+    metadata = mouse_order.set_index(mouse_col)
+    for mouse in mice:
+        labels.append(
+            f"{mouse} | {format_sex_label(metadata.at[mouse, sex_col])} | "
+            f"{metadata.at[mouse, group_col]}"
+        )
+
+    axis.set_yticks(np.arange(len(mice)))
+    axis.set_yticklabels(labels, fontsize=8)
+    axis.set_xlabel(x_col)
+    axis.set_ylabel("Mouse")
+    axis.set_title(title)
+    axis.legend(
+        handles=legend_handles,
+        loc="upper center",
+        bbox_to_anchor=(0.5, -0.14),
+        ncol=len(legend_handles),
+        frameon=True,
+    )
+    figure.tight_layout(rect=[0, 0.10, 1, 1])
+    finish_plot(
+        figure,
+        get_plot_path(plot_folder, filename),
+        show_plots,
+    )
+
+
+def plot_pca_joint(
+    data,
+    grouping_col,
+    title,
+    filename,
+    plot_folder,
+    color_maps,
+    variance,
+    show_plots,
+):
+    plot_data = data.dropna(subset=["PC1", "PC2", grouping_col]).copy()
+    if plot_data.empty:
+        return
+
+    grid = sns.JointGrid(
+        data=plot_data,
+        x="PC1",
+        y="PC2",
+        height=7,
+        ratio=4,
+        space=0.08,
+    )
+
+    for group, group_data in plot_data.groupby(grouping_col, sort=True):
+        color = get_plot_color(group, grouping_col, color_maps)
+        grid.ax_joint.scatter(
+            group_data["PC1"],
+            group_data["PC2"],
+            label=group,
+            s=75,
+            alpha=0.70,
+            color=color,
+        )
+
+        if len(group_data) >= 3 and group_data["PC1"].nunique() > 1:
+            sns.kdeplot(
+                data=group_data,
+                x="PC1",
+                ax=grid.ax_marg_x,
+                color=color,
+                fill=True,
+                alpha=0.22,
+                linewidth=1.5,
+            )
+
+        if len(group_data) >= 3 and group_data["PC2"].nunique() > 1:
+            sns.kdeplot(
+                data=group_data,
+                y="PC2",
+                ax=grid.ax_marg_y,
+                color=color,
+                fill=True,
+                alpha=0.22,
+                linewidth=1.5,
+            )
+
+    grid.ax_joint.axhline(0, color="#9BB7DD", linestyle="--", alpha=0.8)
+    grid.ax_joint.axvline(0, color="#9BB7DD", linestyle="--", alpha=0.8)
+    grid.ax_joint.set_xlabel(f"PC1 ({variance[0]:.1f}%)")
+    grid.ax_joint.set_ylabel(f"PC2 ({variance[1]:.1f}%)")
+    grid.ax_joint.legend(title=grouping_col, frameon=True)
+
+    figure = grid.figure
+    figure.suptitle(title, y=1.02)
+    figure.tight_layout(rect=[0, 0, 1, 0.98])
+    finish_plot(
+        figure,
+        get_plot_path(plot_folder, filename),
+        show_plots,
+    )
+
+
+def plot_pca_score_variants(
+    scores,
+    variance,
+    phase,
+    plot_folder,
+    sex_col,
+    group_col,
+    color_maps,
+    show_plots,
+):
+    if scores.empty:
+        return
+
+    scores = add_combined_group(scores, sex_col, group_col)
+    phase_title = f", {phase}" if phase is not None else ""
+
+    for grouping_col in [sex_col, group_col, "Combined_Group"]:
+        plot_pca_joint(
+            scores,
+            grouping_col,
+            f"PCA (by {grouping_col}{phase_title})",
+            build_plot_filename(
+                "PCA_Scores",
+                grouping_col=grouping_col,
+                phase=phase,
+            ),
+            plot_folder,
+            color_maps,
+            variance,
+            show_plots,
+        )
+
+    for split_col, compare_col in [
+        (sex_col, group_col),
+        (group_col, sex_col),
+    ]:
+        for value in sorted(scores[split_col].dropna().unique()):
+            subset = scores[scores[split_col].eq(value)]
+            plot_pca_joint(
+                subset,
+                compare_col,
+                (
+                    f"PCA ({compare_col} within {split_col} = "
+                    f"{value}{phase_title})"
+                ),
+                build_plot_filename(
+                    "PCA_Scores",
+                    grouping_col=compare_col,
+                    subset_col=split_col,
+                    subset_value=value,
+                    phase=phase,
+                ),
+                plot_folder,
+                color_maps,
+                variance,
+                show_plots,
+            )
+
+
+def create_pca_plots(
+    pca_results,
+    phase_pca_scores_df,
+    plot_folder,
+    sex_col,
+    group_col,
+    color_maps,
+    show_plots,
+):
+    if not pca_results["performed"]:
+        return
+
+    variance = pca_results["variance"][
+        "ExplainedVariancePercent"
+    ].to_numpy()
+    plot_pca_score_variants(
+        pca_results["scores"],
+        variance,
+        None,
+        plot_folder,
+        sex_col,
+        group_col,
+        color_maps,
+        show_plots,
+    )
+
+    if not phase_pca_scores_df.empty:
+        for phase, phase_scores in phase_pca_scores_df.groupby("Phase"):
+            plot_pca_score_variants(
+                phase_scores,
+                variance,
+                phase,
+                plot_folder,
+                sex_col,
+                group_col,
+                color_maps,
+                show_plots,
+            )
+
+    loadings = pca_results["loadings"].copy()
+    loadings["Feature"] = loadings["Feature"].map(
+        lambda feature: SUMMARY_DISPLAY_NAMES.get(feature, feature)
+    )
+    loadings = loadings.set_index("Feature")
+    for component in ["PC1", "PC2"]:
+        figure, axis = plt.subplots(
+            figsize=(8, max(5, len(loadings) * 0.45))
+        )
+        sns.barplot(
+            x=loadings[component],
+            y=loadings.index,
+            color="#4C78A8",
+            ax=axis,
+        )
+        axis.axvline(0, color="black", linestyle="--")
+        axis.set_title(f"PCA Loadings ({component})")
+        axis.set_xlabel("Loading")
+        axis.set_ylabel("Feature")
+        figure.tight_layout()
+        finish_plot(
+            figure,
+            get_plot_path(
+                plot_folder,
+                f"PCA_Loadings_{component}.png",
+            ),
+            show_plots,
+        )
+
+    figure, axis = plt.subplots(figsize=(10, 8))
+    correlation = pca_results["input"][pca_results["features"]].corr()
+    sns.heatmap(
+        correlation,
+        annot=True,
+        fmt=".2f",
+        cmap="coolwarm",
+        center=0,
+        ax=axis,
+    )
+    axis.set_title("PCA Feature Correlation Matrix")
+    figure.tight_layout()
+    finish_plot(
+        figure,
+        get_plot_path(plot_folder, "PCA_Feature_Correlation.png"),
+        show_plots,
+    )
+
+
+# ------------------------------------------------------------
+# GRAPH GENERATION
+# ------------------------------------------------------------
+def create_plots(
+    trials_df,
+    summary_df,
+    phase_summary_df,
+    peri_stop_df,
+    pca_results,
+    phase_pca_scores_df,
+    plot_folder,
+    mouse_col,
+    sex_col,
+    group_col,
+    use_phase,
+    color_maps,
+    show_plots,
+):
+    os.makedirs(plot_folder, exist_ok=True)
+
+    trajectory_specs = [
+        (
+            "OverallAccuracy",
+            trials_df,
+            "Trial",
+            "RollingAccuracy",
+            "Rolling Overall Accuracy",
+        ),
+        (
+            "RegularAccuracy",
+            trials_df[trials_df["TrialType"].eq("Regular")],
+            "TypeTrial",
+            "TypeRollingAccuracy",
+            "Rolling Regular-Trial Accuracy",
+        ),
+        (
+            "StopAccuracy",
+            trials_df[trials_df["TrialType"].eq("Stop")],
+            "TypeTrial",
+            "TypeRollingAccuracy",
+            "Rolling Stop-Trial Accuracy",
+        ),
+    ]
+
+    for name, data, x_col, y_col, title in trajectory_specs:
+        generate_trajectory_variants(
+            data,
+            name,
+            title,
+            x_col,
+            y_col,
+            "Accuracy (%)",
+            mouse_col,
+            sex_col,
+            group_col,
+            None,
+            plot_folder,
+            color_maps,
+            show_plots,
+            y_limits=(0, 100),
+        )
+
+    initiation_specs = [
+        (
+            "CumulativeNextTrialInitiationLatency",
+            "Cumulative Next-Trial Initiation Latency",
+            "CumulativeAvailableInitiationLatency_s",
+            "Cumulative latency (seconds)",
+        ),
+        (
+            "CumulativeMeanNextTrialInitiationLatency",
+            "Cumulative Mean Next-Trial Initiation Latency",
+            "CumulativeMeanAvailableInitiationLatency_s",
+            "Mean latency (seconds)",
+        ),
+    ]
+
+    for metric_name, title, metric, ylabel in initiation_specs:
+        generate_trajectory_variants(
+            trials_df,
+            metric_name,
+            title,
+            "Trial",
+            metric,
+            ylabel,
+            mouse_col,
+            sex_col,
+            group_col,
+            None,
+            plot_folder,
+            color_maps,
+            show_plots,
+        )
+
+    if use_phase:
+        for phase in ["Dark", "Light"]:
+            phase_data = trials_df[trials_df["Phase"].eq(phase)]
+            phase_specs = [
+                (
+                    "OverallAccuracy",
+                    phase_data,
+                    "PhaseTrial",
+                    "PhaseRollingAccuracy",
+                    "Rolling Overall Accuracy",
+                ),
+                (
+                    "RegularAccuracy",
+                    phase_data[phase_data["TrialType"].eq("Regular")],
+                    "PhaseTypeTrial",
+                    "PhaseTypeRollingAccuracy",
+                    "Rolling Regular-Trial Accuracy",
+                ),
+                (
+                    "StopAccuracy",
+                    phase_data[phase_data["TrialType"].eq("Stop")],
+                    "PhaseTypeTrial",
+                    "PhaseTypeRollingAccuracy",
+                    "Rolling Stop-Trial Accuracy",
+                ),
+            ]
+
+            for name, subset, x_col, y_col, title in phase_specs:
+                generate_trajectory_variants(
+                    subset,
+                    name,
+                    title,
+                    x_col,
+                    y_col,
+                    "Accuracy (%)",
+                    mouse_col,
+                    sex_col,
+                    group_col,
+                    phase,
+                    plot_folder,
+                    color_maps,
+                    show_plots,
+                    y_limits=(0, 100),
+                )
+
+            phase_initiation_specs = [
+                (
+                    "CumulativeNextTrialInitiationLatency",
+                    "Cumulative Next-Trial Initiation Latency",
+                    "PhaseCumulativeAvailableInitiationLatency_s",
+                    "Cumulative latency (seconds)",
+                ),
+                (
+                    "CumulativeMeanNextTrialInitiationLatency",
+                    "Cumulative Mean Next-Trial Initiation Latency",
+                    "PhaseCumulativeMeanAvailableInitiationLatency_s",
+                    "Mean latency (seconds)",
+                ),
+            ]
+
+            for metric_name, title, metric, ylabel in phase_initiation_specs:
+                generate_trajectory_variants(
+                    phase_data,
+                    metric_name,
+                    title,
+                    "PhaseTrial",
+                    metric,
+                    ylabel,
+                    mouse_col,
+                    sex_col,
+                    group_col,
+                    phase,
+                    plot_folder,
+                    color_maps,
+                    show_plots,
+                )
+
+    summary_metrics = [
+        "OverallAccuracy",
+        "RegularAccuracy",
+        "StopAccuracy",
+        "BalancedAccuracy",
+        "MeanRegularCorrectRT_s",
+        "Regular LRP latency RP avg (secs)",
+        "Stop LNP latency NP avg (secs)",
+        "MeanStopFailureRT_s",
+        "MeanAvailableInitiationLatency_s",
+        "PostErrorSlowing_s",
+        "PostStopRegularAccuracyChange",
+        "PostStopRegularRTChange_s",
+        "PostStopErrorAccuracyChange",
+        "PostStopErrorRTChange_s",
+    ]
+
+    for metric in summary_metrics:
+        if metric in summary_df.columns:
+            generate_summary_variants(
+                summary_df,
+                metric,
+                SUMMARY_DISPLAY_NAMES.get(metric, metric),
+                sex_col,
+                group_col,
+                None,
+                plot_folder,
+                color_maps,
+                show_plots,
+            )
+
+    if use_phase and not phase_summary_df.empty:
+        for phase, phase_data in phase_summary_df.groupby("Phase"):
+            for metric in summary_metrics:
+                if metric not in phase_data.columns:
+                    continue
+                generate_summary_variants(
+                    phase_data,
+                    metric,
+                    SUMMARY_DISPLAY_NAMES.get(metric, metric),
+                    sex_col,
+                    group_col,
+                    phase,
+                    plot_folder,
+                    color_maps,
+                    show_plots,
+                )
+
+    # -------------------------
+    # PERI-STOP TRAJECTORIES
+    # -------------------------
+    if not peri_stop_df.empty:
+        peri_metrics = [
+            (
+                "RegularAccuracy",
+                "Regular-Trial Accuracy",
+                "Regular-Trial Accuracy (%)",
+                (0, 100),
+            ),
+            (
+                "RegularCorrectRT_s",
+                "Regular LRP L to R Latency",
+                "Regular LRP L to R Latency (seconds)",
+                None,
+            ),
+            (
+                "AvailableInitiationLatency_s",
+                "Next-Trial Initiation Latency",
+                "Next-Trial Initiation Latency (seconds)",
+                None,
+            ),
+        ]
+        anchor_groups = [
+            ("AllStop", "All Stop Trials", peri_stop_df),
+            (
+                "StopSuccess",
+                "Successful Stop LNP Trials",
+                peri_stop_df[
+                    peri_stop_df["AnchorCategory"].eq("Stop Success")
+                ],
+            ),
+            (
+                "StopError",
+                "Failed Stop LR Trials",
+                peri_stop_df[
+                    peri_stop_df["AnchorCategory"].eq("Stop Error")
+                ],
+            ),
+        ]
+
+        for anchor_name, anchor_label, anchor_data in anchor_groups:
+            for metric, title, ylabel, y_limits in peri_metrics:
+                generate_trajectory_variants(
+                    anchor_data,
+                    f"PeriStop_{anchor_name}_{metric}",
+                    f"{title} Around {anchor_label}",
+                    "RelativeTrial",
+                    metric,
+                    ylabel,
+                    mouse_col,
+                    sex_col,
+                    group_col,
+                    None,
+                    plot_folder,
+                    color_maps,
+                    show_plots,
+                    y_limits=y_limits,
+                    vertical_line=0,
+                )
+
+                if use_phase:
+                    for phase in ["Dark", "Light"]:
+                        phase_anchor_data = anchor_data[
+                            anchor_data["Phase"].eq(phase)
+                        ]
+                        generate_trajectory_variants(
+                            phase_anchor_data,
+                            f"PeriStop_{anchor_name}_{metric}",
+                            f"{title} Around {anchor_label}",
+                            "RelativeTrial",
+                            metric,
+                            ylabel,
+                            mouse_col,
+                            sex_col,
+                            group_col,
+                            phase,
+                            plot_folder,
+                            color_maps,
+                            show_plots,
+                            y_limits=y_limits,
+                            vertical_line=0,
+                        )
+
+    # -------------------------
+    # STACKED TRIAL RASTERS
+    # -------------------------
+    plot_stacked_trial_raster(
+        trials_df,
+        "Trial",
+        "StopSig Trial Sequences",
+        "Stacked_TrialRaster.png",
+        plot_folder,
+        mouse_col,
+        sex_col,
+        group_col,
+        show_plots,
+    )
+
+    plot_stacked_trial_raster(
+        trials_df,
+        "Trial",
+        "StopSig Trial Accuracy",
+        "Stacked_AccuracyRaster.png",
+        plot_folder,
+        mouse_col,
+        sex_col,
+        group_col,
+        show_plots,
+        raster_mode="accuracy",
+    )
+
+    if use_phase:
+        for phase in ["Dark", "Light"]:
+            plot_stacked_trial_raster(
+                trials_df[trials_df["Phase"].eq(phase)],
+                "PhaseTrial",
+                f"StopSig Trial Sequences ({phase})",
+                f"Stacked_TrialRaster__{phase}.png",
+                plot_folder,
+                mouse_col,
+                sex_col,
+                group_col,
+                show_plots,
+            )
+
+            plot_stacked_trial_raster(
+                trials_df[trials_df["Phase"].eq(phase)],
+                "PhaseTrial",
+                f"StopSig Trial Accuracy ({phase})",
+                f"Stacked_AccuracyRaster__{phase}.png",
+                plot_folder,
+                mouse_col,
+                sex_col,
+                group_col,
+                show_plots,
+                raster_mode="accuracy",
+            )
+
+    # -------------------------
+    # PCA AND CORRELATION PLOTS
+    # -------------------------
+    create_pca_plots(
+        pca_results,
+        phase_pca_scores_df,
+        plot_folder,
+        sex_col,
+        group_col,
+        color_maps,
+        show_plots,
+    )
 
 
 # ------------------------------------------------------------
 # MAIN GUI AND ANALYSIS WORKFLOW
 # ------------------------------------------------------------
 def run_gui():
-    global active_side_input, include_incomplete, use_phase, light_start, light_end, metadata_df, metadata_cols_left, mouse_col
-    global sex_col, group_col, summary_df, trials_all_df, demand_df, ordered_mice, plots_folder
-    global group_colors, sex_colors, show_plots, save_individual_timecourse_plots
-
     # -------------------------
-    # ROOT SETUP AND FILE SELECTION
+    # STEP 1A: ROOT SETUP
     # -------------------------
-
     root = tk.Tk()
-
     root.withdraw()
 
+    # -------------------------
+    # STEP 1B: FILE SELECTION AND OUTPUT LOCATION
+    # -------------------------
     file_paths = filedialog.askopenfilenames(
-        title="Select FED3 ClosedEcon PR1 CSV files",
-        filetypes=[("CSV files", "*.csv")]
+        title="Select FED3 StopSig CSV files",
+        filetypes=[("CSV files", "*.csv")],
     )
-
     if not file_paths:
-        root.destroy()
         return
 
-    selected_names = [os.path.basename(path) for path in file_paths]
-    if len(selected_names) != len(set(selected_names)):
-        messagebox.showerror(
-            "Duplicate Filenames",
-            "Two selected files have the same basename. Rename one file or "
-            "process the folders separately so metadata matching is unambiguous.",
-        )
-        root.destroy()
-        return
-
-    file_map = {os.path.basename(f): f for f in file_paths}
-
+    file_map = {os.path.basename(path): path for path in file_paths}
     save_folder = os.path.dirname(file_paths[0])
 
     # -------------------------
-    # ANALYSIS SETTINGS
+    # STEP 2A: LIGHT/DARK SETTINGS
     # -------------------------
-
     use_phase = messagebox.askyesno(
         "Light/Dark Analysis",
-        "Do you want to split data by Light/Dark cycle?"
+        "Do you want to split trials by Light/Dark cycle?",
     )
-
     light_start = "07:00"
     light_end = "19:00"
 
     if use_phase:
-        light_start = askstring(
-            "Light Cycle",
-            "Enter LIGHT START time (24h HH:MM)\nExample: 07:00",
-            initialvalue="07:00"
+        light_start = clean_time_input(
+            askstring(
+                "Light Cycle",
+                "Enter LIGHT START time (24h HH:MM)",
+                initialvalue="07:00",
+            )
         )
-
-        light_end = askstring(
-            "Light Cycle",
-            "Enter LIGHT END time (24h HH:MM)\nExample: 19:00",
-            initialvalue="19:00"
+        light_end = clean_time_input(
+            askstring(
+                "Light Cycle",
+                "Enter LIGHT END time (24h HH:MM)",
+                initialvalue="19:00",
+            )
         )
-
-        light_start = clean_time_input(light_start)
-        light_end   = clean_time_input(light_end)
-
-        if light_start is None or light_end is None:
-            messagebox.showwarning("Cancelled", "Light/Dark not set. Exiting.")
-            root.destroy()
-            return
-
         if not validate_time(light_start) or not validate_time(light_end):
             messagebox.showerror(
-                "Invalid Time Format",
-                "Please enter time in HH:MM format (e.g. 07:00 or 19:00)"
+                "Invalid Time",
+                "Light start and end must use HH:MM format.",
             )
-            root.destroy()
             return
 
     # -------------------------
-    # METADATA INPUT
+    # STEP 2B: ROLLING WINDOW SETTING
     # -------------------------
-
-    use_existing = messagebox.askyesno(
-        "Metadata",
-        "Do you have an existing metadata file?\n\n"
-        "Do not delete or leave any metadata header titles blank."
+    rolling_window = askinteger(
+        "Rolling Accuracy Window",
+        "Enter the number of trials used for rolling accuracy.",
+        initialvalue=20,
+        minvalue=1,
     )
+    if rolling_window is None:
+        return
 
-    metadata_df = None
+    # -------------------------
+    # STEP 2C: PERI-STOP WINDOW SETTING
+    # -------------------------
+    peri_window = askinteger(
+        "Peri-Stop Window",
+        "Enter the number of trials before and after each Stop trial.",
+        initialvalue=10,
+        minvalue=1,
+    )
+    if peri_window is None:
+        return
 
-    if use_existing:
-        meta_file = filedialog.askopenfilename(
-            title="Select Metadata File",
-            filetypes=[("Excel files", "*.xlsx")]
-        )
+    # -------------------------
+    # STEP 2D: TASK TIMING SETTINGS
+    # -------------------------
+    regular_omission_timeout_s = askinteger(
+        "Task Timing",
+        (
+            "Regular no-poke/omission timeout in seconds.\n\n"
+            "Used after Regular LN trials to calculate next-trial initiation latency."
+        ),
+        initialvalue=DEFAULT_REGULAR_OMISSION_TIMEOUT_S,
+        minvalue=0,
+    )
+    if regular_omission_timeout_s is None:
+        return
 
-        if not meta_file:
-            root.destroy()
-            return
+    stop_error_noise_s = askinteger(
+        "Task Timing",
+        (
+            "Stop-error noise duration in seconds.\n\n"
+            "Used after Stop LR trials before the timeout period."
+        ),
+        initialvalue=DEFAULT_STOP_ERROR_NOISE_S,
+        minvalue=0,
+    )
+    if stop_error_noise_s is None:
+        return
 
-        try:
-            metadata_df = pd.read_excel(meta_file)
-        except Exception as error:
-            messagebox.showerror("Metadata Error", str(error))
-            root.destroy()
-            return
+    stop_error_timeout_s = askinteger(
+        "Task Timing",
+        (
+            "Stop-error timeout duration in seconds.\n\n"
+            "Total Stop LR lockout = noise duration + timeout duration."
+        ),
+        initialvalue=DEFAULT_STOP_ERROR_TIMEOUT_S,
+        minvalue=0,
+    )
+    if stop_error_timeout_s is None:
+        return
 
-        metadata_df = metadata_df.apply(
-            lambda col: col.map(lambda x: x.strip() if isinstance(x, str) else x)
-        )
+    stop_signal_delay_ms = askinteger(
+        "Task Timing",
+        (
+            "Stop-signal delay in milliseconds.\n\n"
+            "This is saved with each trial for documentation."
+        ),
+        initialvalue=DEFAULT_STOP_SIGNAL_DELAY_MS,
+        minvalue=0,
+    )
+    if stop_signal_delay_ms is None:
+        return
 
-    else:
-        meta_window = tk.Toplevel()
-        meta_window.title("Enter Metadata")
-        meta_window.geometry("700x500")
+    response_window_s = askinteger(
+        "Task Timing",
+        (
+            "Response window in seconds.\n\n"
+            "This is saved with each trial for documentation."
+        ),
+        initialvalue=DEFAULT_RESPONSE_WINDOW_S,
+        minvalue=1,
+    )
+    if response_window_s is None:
+        return
 
-        tk.Label(
-            meta_window,
-            text=("Keep all metadata header titles present and unique. "
-                  "Individual metadata values may be left blank."),
-            fg="dark red"
-        ).pack(fill="x", padx=8, pady=(6, 2))
-
-        canvas = tk.Canvas(meta_window)
-        scrollbar = tk.Scrollbar(meta_window, orient="vertical", command=canvas.yview)
-        frame = tk.Frame(canvas)
-
-        frame.bind(
-            "<Configure>",
-            lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
-        )
-
-        canvas.create_window((0, 0), window=frame, anchor="nw")
-        canvas.configure(yscrollcommand=scrollbar.set)
-
-        canvas.pack(side="left", fill="both", expand=True)
-        scrollbar.pack(side="right", fill="y")
-
-        def _on_mousewheel(event):
-            if event.num == 5 or event.delta < 0:
-                canvas.yview_scroll(1, "units")
-            elif event.num == 4 or event.delta > 0:
-                canvas.yview_scroll(-1, "units")
-
-        canvas.bind_all("<MouseWheel>", _on_mousewheel)
-        canvas.bind_all("<Button-4>", _on_mousewheel)
-        canvas.bind_all("<Button-5>", _on_mousewheel)
-
-        headers = ["Filename", "Mouse ID", "Sex", "Genotype"]
-        header_entries = {}
-
-        for col, header in enumerate(headers):
-            if header == "Filename":
-                tk.Label(
-                    frame,
-                    text=header,
-                    font=("Arial", 10, "bold")
-                ).grid(row=0, column=col)
-            else:
-                e = tk.Entry(frame)
-                e.insert(0, header)
-                e.grid(row=0, column=col)
-                header_entries[col] = e
-
-        rows = []
-
-        for i, fname in enumerate(file_map.keys()):
-            tk.Label(frame, text=fname).grid(row=i + 1, column=0)
-
-            m = tk.Entry(frame)
-            s = tk.Entry(frame)
-            g = tk.Entry(frame)
-
-            m.grid(row=i + 1, column=1)
-            s.grid(row=i + 1, column=2)
-            g.grid(row=i + 1, column=3)
-
-            rows.append({"file": fname, "mouse": m, "sex": s, "geno": g})
-
-        def collect():
-            data = []
-
-            mouse_h = header_entries[1].get()
-            sex_h   = header_entries[2].get()
-            geno_h  = header_entries[3].get()
-
-            for r in rows:
-                data.append({
-                    "Filename": r["file"],
-                    mouse_h: r["mouse"].get(),
-                    sex_h: r["sex"].get(),
-                    geno_h: r["geno"].get()
-                })
-
-            global metadata_df
-            metadata_df = pd.DataFrame(data)
-
-            metadata_df = metadata_df.apply(
-                lambda col: col.map(lambda x: x.strip() if isinstance(x, str) else x)
-            )
-
-            metadata_df.to_excel(
-                os.path.join(save_folder, "ClosedEconPR1_Metadata.xlsx"),
-                index=False
-            )
-
-            meta_window.destroy()
-
-        tk.Button(frame, text="Continue", command=collect).grid(
-            row=len(rows) + 2,
-            column=0,
-            columnspan=4
-        )
-
-        root.wait_window(meta_window)
-
+    # -------------------------
+    # STEP 3: METADATA INPUT
+    # -------------------------
+    metadata_df = collect_metadata(root, file_map, save_folder)
     if metadata_df is None or metadata_df.empty:
-        messagebox.showwarning("No Metadata", "No metadata was supplied.")
-        root.destroy()
         return
 
-    if "Filename" not in metadata_df.columns:
+    metadata_columns = [
+        column for column in metadata_df.columns if column != "Filename"
+    ]
+    if len(metadata_columns) < 3:
         messagebox.showerror(
             "Metadata Error",
-            "The metadata file must contain a Filename column.",
+            "Metadata needs Mouse ID, Sex, and Group/Genotype columns.",
         )
-        root.destroy()
         return
 
-    meta_cols = [c for c in metadata_df.columns if c != "Filename"]
-
-    if len(meta_cols) < 3:
-        messagebox.showerror(
-            "Metadata Error",
-            "Metadata needs mouse ID, sex, and group/genotype columns.",
-        )
-        root.destroy()
-        return
-
-    if any(not str(column).strip() for column in meta_cols[:3]):
-        messagebox.showerror(
-            "Metadata Error",
-            "The first three metadata headers after Filename cannot be blank.",
-        )
-        root.destroy()
-        return
-
-    mouse_col = meta_cols[0]
-
-    sex_col   = meta_cols[1]
-
-    group_col = meta_cols[2]
+    mouse_col, sex_col, group_col = metadata_columns[:3]
 
     # -------------------------
-    # ACTIVE-SIDE AND INCOMPLETE-INTERVAL SETTINGS
+    # STEP 4: PLOT DISPLAY AND COLOURS
     # -------------------------
-
-    active_side_input = askstring(
-        "Active Poke Side",
-        "Which poke side is active?\n\n"
-        "Enter Left, Right, or Auto.\n\n"
-        "Auto uses the Active_Poke column when it is available and consistent.",
-        initialvalue="Auto"
+    show_plots = messagebox.askyesno(
+        "Plot Display",
+        "Display plots?\n\nYes = show plots\nNo = save only",
     )
-
-    if active_side_input is None:
-        messagebox.showwarning("Cancelled", "No active side selected. Exiting.")
-        root.destroy()
-        return
-
-    active_side_input = active_side_input.strip().lower()
-
-    if active_side_input not in ["left", "right", "auto"]:
-        messagebox.showerror(
-            "Invalid Active Side",
-            "Please enter Left, Right, or Auto."
-        )
-        root.destroy()
-        return
-
-    include_incomplete = messagebox.askyesno(
-        "Incomplete Final Interval",
-        "Include final unfinished ratio interval if there are pokes after the last pellet?"
+    use_custom_colors = messagebox.askyesno(
+        "Plot Colours",
+        "Would you like to choose custom colours for Sex and Genotype groups?",
+    )
+    color_maps = configure_plot_colors(
+        metadata_df,
+        group_col,
+        sex_col,
+        use_custom_colors,
     )
 
     # -------------------------
-    # PROCESS INDIVIDUAL FILES
+    # STEP 5: READ, CLEAN, AND PROCESS INDIVIDUAL FILES
     # -------------------------
-
     all_trials = []
+    all_summaries = []
+    all_type_summaries = []
+    all_event_counts = []
+    all_phase_summaries = []
+    all_peri_stop = []
+    errors = []
 
-    all_summary = []
-
-    all_demand = []
-
-    all_phase_demand = []
-
-    all_phase_demand_exclusive = []
-
-    processing_errors = []
-
-    for i, (_, row) in enumerate(metadata_df.iterrows()):
-        filename = str(row["Filename"]).strip()
-        print(f"Processing {i+1}/{len(metadata_df)}", end="\r")
+    for _, metadata_row in metadata_df.iterrows():
+        filename = metadata_row["Filename"]
 
         if filename not in file_map:
-            processing_errors.append(
-                f"{filename}: not among the selected CSV files"
-            )
+            errors.append(f"{filename}: not among selected CSV files")
             continue
 
         try:
-            df = pd.read_csv(file_map[filename], low_memory=False)
-            trials_df = build_trials(
-                df,
-                active_side_input=active_side_input,
-                include_incomplete=include_incomplete,
+            raw_df = pd.read_csv(file_map[filename], low_memory=False)
+            trials_df, clean_df = reconstruct_trials(
+                raw_df,
+                rolling_window=rolling_window,
                 use_phase=use_phase,
                 light_start=light_start,
                 light_end=light_end,
+                regular_omission_timeout_s=regular_omission_timeout_s,
+                stop_error_noise_s=stop_error_noise_s,
+                stop_error_timeout_s=stop_error_timeout_s,
+                stop_signal_delay_ms=stop_signal_delay_ms,
+                response_window_s=response_window_s,
             )
         except Exception as error:
-            processing_errors.append(f"{filename}: {error}")
+            errors.append(f"{filename}: {error}")
             continue
 
         if trials_df.empty:
-            processing_errors.append(f"{filename}: no pellet trials reconstructed")
+            errors.append(f"{filename}: no StopSig trial-start events found")
             continue
 
-        trials_df["Filename"] = filename
-        trials_df[mouse_col] = row[mouse_col]
-        trials_df[sex_col] = row[sex_col]
-        trials_df[group_col] = row[group_col]
+        metadata_values = {
+            "Filename": filename,
+            mouse_col: metadata_row[mouse_col],
+            sex_col: metadata_row[sex_col],
+            group_col: metadata_row[group_col],
+        }
+        timing_values = {
+            "RegularOmissionTimeout_s": regular_omission_timeout_s,
+            "StopErrorNoise_s": stop_error_noise_s,
+            "StopErrorTimeout_s": stop_error_timeout_s,
+            "StopErrorLockout_s": stop_error_noise_s + stop_error_timeout_s,
+            "StopSignalDelay_ms": stop_signal_delay_ms,
+            "ResponseWindow_s": response_window_s,
+        }
+        for column, value in metadata_values.items():
+            trials_df[column] = value
 
-        summary = summarize_trials(trials_df)
-        summary["Filename"] = filename
-        summary[mouse_col] = row[mouse_col]
-        summary[sex_col] = row[sex_col]
-        summary[group_col] = row[group_col]
-
-        demand = demand_by_fr(trials_df)
-        phase_demand = demand_by_fr_phase(trials_df, use_phase)
-        phase_demand_exclusive = demand_by_fr_phase(
-            trials_df,
-            use_phase,
-            exclusive_only=True,
-        )
-
-        if not demand.empty:
-            demand["Filename"] = filename
-            demand[mouse_col] = row[mouse_col]
-            demand[sex_col] = row[sex_col]
-            demand[group_col] = row[group_col]
-
-        if not phase_demand.empty:
-            phase_demand["Filename"] = filename
-            phase_demand[mouse_col] = row[mouse_col]
-            phase_demand[sex_col] = row[sex_col]
-            phase_demand[group_col] = row[group_col]
-
-        if not phase_demand_exclusive.empty:
-            phase_demand_exclusive["Filename"] = filename
-            phase_demand_exclusive[mouse_col] = row[mouse_col]
-            phase_demand_exclusive[sex_col] = row[sex_col]
-            phase_demand_exclusive[group_col] = row[group_col]
-
+        event_counts = clean_df["Event_clean"].value_counts()
+        summary = summarize_trials(trials_df, event_counts)
+        summary.update(metadata_values)
+        summary.update(timing_values)
+        all_summaries.append(summary)
         all_trials.append(trials_df)
-        all_summary.append(summary)
-        all_demand.append(demand)
-        all_phase_demand.append(phase_demand)
-        all_phase_demand_exclusive.append(phase_demand_exclusive)
 
-    if len(all_trials) == 0:
-        details = "\n".join(processing_errors)
-        messagebox.showwarning(
-            "No Data",
-            "No trials were reconstructed."
-            + (f"\n\n{details}" if details else ""),
+        peri_stop = build_peri_stop_data(
+            trials_df,
+            peri_window,
+            mouse_col,
+            sex_col,
+            group_col,
         )
-        root.destroy()
+        if not peri_stop.empty:
+            all_peri_stop.append(peri_stop)
+
+        type_summary = summarize_trial_types(trials_df)
+        for column, value in metadata_values.items():
+            type_summary[column] = value
+        all_type_summaries.append(type_summary)
+
+        event_count_df = event_counts.rename_axis("Event").reset_index(
+            name="Count"
+        )
+        for column, value in metadata_values.items():
+            event_count_df[column] = value
+        all_event_counts.append(event_count_df)
+
+        if use_phase:
+            phase_summary = summarize_phases(trials_df)
+            for column, value in metadata_values.items():
+                phase_summary[column] = value
+            all_phase_summaries.append(phase_summary)
+
+    if not all_trials:
+        messagebox.showerror(
+            "No Output",
+            "No files could be reconstructed.\n\n" + "\n".join(errors),
+        )
         return
 
+    # -------------------------
+    # STEP 6: COMBINE OUTPUTS AND RUN PCA
+    # -------------------------
     trials_all_df = pd.concat(all_trials, ignore_index=True)
-
-    summary_df = pd.DataFrame(all_summary)
-
-    demand_df = pd.concat(all_demand, ignore_index=True) if all_demand else pd.DataFrame()
-
-    phase_demand_df = (
-        pd.concat(all_phase_demand, ignore_index=True)
-        if all_phase_demand else pd.DataFrame()
+    summary_df = pd.DataFrame(all_summaries)
+    type_summary_df = pd.concat(all_type_summaries, ignore_index=True)
+    event_counts_df = pd.concat(all_event_counts, ignore_index=True)
+    phase_summary_df = (
+        pd.concat(all_phase_summaries, ignore_index=True)
+        if all_phase_summaries
+        else pd.DataFrame()
     )
-
-    phase_demand_exclusive_df = (
-        pd.concat(all_phase_demand_exclusive, ignore_index=True)
-        if all_phase_demand_exclusive else pd.DataFrame()
+    peri_stop_df = (
+        pd.concat(all_peri_stop, ignore_index=True)
+        if all_peri_stop
+        else pd.DataFrame()
     )
-
-    # -------------------------
-    # COMBINE, SORT, AND FORMAT OUTPUTS
-    # -------------------------
-
-    for df in [trials_all_df, summary_df, demand_df, phase_demand_df, phase_demand_exclusive_df]:
-        if not df.empty:
-            df[mouse_col] = df[mouse_col].astype(str)
-            df["_Mouse_numeric"] = pd.to_numeric(df[mouse_col], errors="coerce")
-            sort_cols = [group_col, sex_col, "_Mouse_numeric", mouse_col]
-
-            if "Trial" in df.columns:
-                sort_cols.append("Trial")
-
-            if "Phase" in df.columns:
-                sort_cols.append("Phase")
-
-            if "FR" in df.columns:
-                sort_cols.append("FR")
-
-            df.sort_values(sort_cols, inplace=True)
-            df.drop(columns="_Mouse_numeric", inplace=True)
-
-    metadata_cols_left = ["Filename", mouse_col]
-
-    for col in [sex_col, group_col]:
-        if col in summary_df.columns and col not in metadata_cols_left:
-            metadata_cols_left.append(col)
-
-    trials_all_df = move_metadata_left(trials_all_df)
-
-    summary_df = move_metadata_left(summary_df)
-
-    demand_df = move_metadata_left(demand_df)
-
-    phase_demand_df = move_metadata_left(phase_demand_df)
-
-    phase_demand_exclusive_df = move_metadata_left(phase_demand_exclusive_df)
-
-    trial_front_cols = metadata_cols_left + [
-        "Trial",
-        "PhaseTrial",
-        "ExclusivePhaseTrial",
-        "Phase",
-        "StartPhase",
-        "EndPhase",
-        "PhaseCrossing",
-        "Block",
-        "Completed",
-        "StartTime",
-        "EndTime"
-    ]
-
-    trials_all_df = reorder_columns(trials_all_df, trial_front_cols)
-
-    phase_demand_front_cols = metadata_cols_left + [
-        "Phase",
-        "FR"
-    ]
-
-    phase_demand_df = reorder_columns(phase_demand_df, phase_demand_front_cols)
-
-    phase_demand_exclusive_df = reorder_columns(
-        phase_demand_exclusive_df,
-        phase_demand_front_cols
-    )
-
-    ordered_mice = summary_df[mouse_col].astype(str).tolist()
-
-    # -------------------------
-    # EXPORT EXCEL WORKBOOK
-    # -------------------------
-
-    output_path = os.path.join(save_folder, "ClosedEconPR1_EXTRAS.xlsx")
-
-    summary_metrics = [
-        "TotalPellets",
-        "CompletedTrials",
-        "TotalPokes",
-        "ActivePokes",
-        "InactivePokes",
-        "Accuracy",
-        "InactivePokePercent",
-        "PokesPerPellet",
-        "ActivePokesPerPellet",
-        "InactivePokesPerPellet",
-        "PelletsPerHour",
-        "ActivePokesPerHour",
-        "TotalSessionTime_h",
-        "FinalFR",
-        "MaxFR",
-        "MeanFR",
-        "MedianFR",
-        "MeanTrialDuration_min",
-        "MeanVigor",
-        "MeanTotalPokeRate",
-        "MeanInactivePokeRate",
-        "MeanInactivePokePercent",
-        "MeanRetrievalTime",
-        "MeanInterPelletInterval",
-        "BlocksCompleted",
-        "IncompleteFinalInterval",
-        "IncompleteFinalPokes"
-    ]
-
-    trial_metrics = [
-        "FR",
-        "ActivePokes",
-        "InactivePokes",
-        "TotalPokes",
-        "Accuracy",
-        "InactivePokePercent",
-        "Vigor",
-        "TotalPokeRate",
-        "InactivePokeRate",
-        "PokesPerPellet",
-        "ActivePokesPerPellet",
-        "Duration_min",
-        "RetrievalTime",
-        "InterPelletInterval",
-        "CumulativePellets",
-        "CumulativeActivePokes",
-        "CumulativeTotalPokes"
-    ]
-
-    demand_metrics = [
-        "Pellets",
-        "ActivePokes",
-        "InactivePokes",
-        "TotalPokes",
-        "TotalDuration_min",
-        "PokesPerPellet",
-        "ActivePokesPerPellet",
-        "InactivePokesPerPellet",
-        "PooledAccuracy",
-        "InactivePokePercent",
-        "PelletsPerMinute",
-        "MeanAccuracy",
-        "MeanVigor",
-        "MeanTotalPokeRate",
-        "MeanInactivePokeRate",
-        "MeanInactivePokePercent",
-        "MeanDuration_min",
-        "MeanRetrievalTime",
-        "MeanInterPelletInterval"
-    ]
-
-    with pd.ExcelWriter(output_path) as writer:
-
-        trials_all_df.to_excel(
-            writer,
-            sheet_name="Trials",
-            index=False,
-            float_format="%.5f"
-        )
-
-        if use_phase and "PhaseCrossing" in trials_all_df.columns:
-            trials_exclusive_df = trials_all_df[
-                trials_all_df["PhaseCrossing"].eq(False)
-            ].copy()
-
-            if not trials_exclusive_df.empty:
-                trials_exclusive_df.to_excel(
-                    writer,
-                    sheet_name="Trials_ExclusivePhase",
-                    index=False,
-                    float_format="%.5f"
-                )
-
-        summary_df.to_excel(
-            writer,
-            sheet_name="Summary",
-            index=False,
-            float_format="%.5f"
-        )
-
-        if not demand_df.empty:
-            demand_df.to_excel(
-                writer,
-                sheet_name="Demand_By_FR",
-                index=False,
-                float_format="%.5f"
-            )
-
-        if use_phase and not phase_demand_df.empty:
-            phase_demand_df.to_excel(
-                writer,
-                sheet_name="Demand_By_FR_Phase",
-                index=False,
-                float_format="%.5f"
-            )
-
-        if use_phase and not phase_demand_exclusive_df.empty:
-            phase_demand_exclusive_df.to_excel(
-                writer,
-                sheet_name="Demand_By_FR_Phase_Excl",
-                index=False,
-                float_format="%.5f"
-            )
-
-        for metric in summary_metrics:
-            table = make_summary_metric_table(metric)
-
-            if not table.empty:
-                table.to_excel(
-                    writer,
-                    sheet_name=safe_sheet_name(metric),
-                    index=False,
-                    float_format="%.5f"
-                )
-
-        for metric in trial_metrics:
-            table = make_trial_metric_table(metric)
-
-            if not table.empty:
-                table.to_excel(
-                    writer,
-                    sheet_name=safe_sheet_name(f"{metric}_Trial"),
-                    float_format="%.5f"
-                )
-
-        for metric in demand_metrics:
-            table = make_demand_metric_table(metric)
-
-            if not table.empty:
-                table.to_excel(
-                    writer,
-                    sheet_name=safe_sheet_name(f"Demand_{metric}"),
-                    float_format="%.5f"
-                )
-
-        if use_phase and not phase_demand_df.empty:
-            for phase, d_phase in phase_demand_df.groupby("Phase"):
-
-                for metric in demand_metrics:
-                    table = make_demand_metric_table(
-                        metric,
-                        data=d_phase
-                    )
-
-                    if not table.empty:
-                        table.to_excel(
-                            writer,
-                            sheet_name=safe_sheet_name(f"Demand_{metric}_{phase}"),
-                            float_format="%.5f"
-                        )
-
-        if use_phase and not phase_demand_exclusive_df.empty:
-            for phase, d_phase in phase_demand_exclusive_df.groupby("Phase"):
-
-                for metric in demand_metrics:
-                    table = make_demand_metric_table(
-                        metric,
-                        data=d_phase
-                    )
-
-                    if not table.empty:
-                        table.to_excel(
-                            writer,
-                            sheet_name=safe_sheet_name(f"ExclDemand_{phase}_{metric}"),
-                            float_format="%.5f"
-                        )
-
-        if use_phase:
-            for phase, d_phase in trials_all_df.groupby("Phase"):
-                d_phase_completed = d_phase[d_phase["Completed"].eq(1)].copy()
-                d_phase_exclusive = d_phase_completed[
-                    d_phase_completed["PhaseCrossing"].eq(False)
-                ].copy()
-
-                for metric in trial_metrics:
-                    table = make_trial_metric_table(
-                        metric,
-                        data=d_phase_completed,
-                        index_col="PhaseTrial"
-                    )
-
-                    if not table.empty:
-                        table.to_excel(
-                            writer,
-                            sheet_name=safe_sheet_name(f"{metric}_{phase}"),
-                            float_format="%.5f"
-                        )
-
-                    exclusive_table = make_trial_metric_table(
-                        metric,
-                        data=d_phase_exclusive,
-                        index_col="ExclusivePhaseTrial"
-                    )
-
-                    if not exclusive_table.empty:
-                        exclusive_table.to_excel(
-                            writer,
-                            sheet_name=safe_sheet_name(f"Excl_{phase}_{metric}"),
-                            float_format="%.5f"
-                        )
-
-    # -------------------------
-    # CONFIGURE PLOTS
-    # -------------------------
-
-    plots_folder = os.path.join(save_folder, "ClosedEconPR1_Plots")
-
-    if not os.path.exists(plots_folder):
-        os.makedirs(plots_folder)
-
-    show_plots = messagebox.askyesno(
-        "Plot Display",
-        "Display plots?\n\nYes = show plots\nNo = save only"
-    )
-
-    save_individual_timecourse_plots = messagebox.askyesno(
-        "Individual Timecourse Plots",
-        "Save individual mouse versions of the stacked timecourse plots?"
-    )
-
-    use_custom_colors = messagebox.askyesno(
-        "Plot Colours",
-        "Would you like to choose custom colours for Sex and Genotype groups?"
-    )
-
-    unique_groups = sorted(metadata_df[group_col].dropna().astype(str).unique())
-
-    unique_sexes = sorted(metadata_df[sex_col].dropna().astype(str).unique())
-
-    group_colors = build_color_map(unique_groups)
-
-    sex_colors = build_color_map(unique_sexes)
-
-    if use_custom_colors:
-
-        for grp in unique_groups:
-            color = colorchooser.askcolor(title=f"Choose colour for {grp}")[1]
-
-            if color is not None:
-                group_colors[str(grp)] = color
-
-        for sex in unique_sexes:
-            color = colorchooser.askcolor(title=f"Choose colour for {sex}")[1]
-
-            if color is not None:
-                sex_colors[str(sex)] = color
-
-    # -------------------------
-    # GENERATE PLOTS
-    # -------------------------
-
-    summary_df = summary_df.copy()
-
-    completed_trials = trials_all_df[trials_all_df["Completed"].eq(1)].copy()
-
-    summary_df["Combined_Group"] = (
-        summary_df[sex_col].astype(str)
-        + "_"
-        + summary_df[group_col].astype(str)
-    )
-
-    completed_trials["Combined_Group"] = (
-        completed_trials[sex_col].astype(str)
-        + "_"
-        + completed_trials[group_col].astype(str)
-    )
-
-    if not demand_df.empty:
-        demand_df = demand_df.copy()
-
-        demand_df["Combined_Group"] = (
-            demand_df[sex_col].astype(str)
-            + "_"
-            + demand_df[group_col].astype(str)
-        )
-
-    if not phase_demand_df.empty:
-        phase_demand_df = phase_demand_df.copy()
-
-        phase_demand_df["Combined_Group"] = (
-            phase_demand_df[sex_col].astype(str)
-            + "_"
-            + phase_demand_df[group_col].astype(str)
-        )
-
-    if not phase_demand_exclusive_df.empty:
-        phase_demand_exclusive_df = phase_demand_exclusive_df.copy()
-
-        phase_demand_exclusive_df["Combined_Group"] = (
-            phase_demand_exclusive_df[sex_col].astype(str)
-            + "_"
-            + phase_demand_exclusive_df[group_col].astype(str)
-        )
-
-    plot_stacked_individual_timecourse(
-        completed_trials,
-        metric="Block_Pellet_Count",
-        ylabel="Pellet Count in Block",
-        title="Individual Block Progression",
-        filename="Stacked_BlockPelletCount_by_time.png",
-        color_by_value=True
-    )
-
-    plot_stacked_individual_timecourse(
-        completed_trials,
-        metric="FR",
-        ylabel="FR",
-        title="Individual FR Progression",
-        filename="Stacked_FR_by_time.png"
-    )
-
-    plot_stacked_individual_timecourse(
-        completed_trials,
-        metric="CumulativePellets",
-        ylabel="Cumulative Pellets",
-        title="Individual Cumulative Pellets",
-        filename="Stacked_CumulativePellets_by_time.png"
-    )
-
-    summary_plot_metrics = [
-        "TotalPellets",
-        "CompletedTrials",
-        "TotalPokes",
-        "ActivePokes",
-        "InactivePokes",
-        "Accuracy",
-        "InactivePokePercent",
-        "PokesPerPellet",
-        "ActivePokesPerPellet",
-        "InactivePokesPerPellet",
-        "PelletsPerHour",
-        "ActivePokesPerHour",
-        "TotalSessionTime_h",
-        "FinalFR",
-        "MaxFR",
-        "MeanFR",
-        "MedianFR",
-        "MeanTrialDuration_min",
-        "MeanVigor",
-        "MeanTotalPokeRate",
-        "MeanInactivePokeRate",
-        "MeanInactivePokePercent",
-        "MeanRetrievalTime",
-        "MeanInterPelletInterval",
-        "BlocksCompleted",
-        "IncompleteFinalInterval",
-        "IncompleteFinalPokes"
-    ]
-
-    for metric in summary_plot_metrics:
-
-        plot_summary_stripplot(
-            summary_df,
-            metric=metric,
-            x_col=group_col,
-            hue_col=sex_col,
-            title=f"{metric} (Individual Mice)",
-            filename=build_plot_filename(metric, group_col_plot=group_col)
-        )
-
-        plot_summary_stripplot(
-            summary_df,
-            metric=metric,
-            x_col=sex_col,
-            hue_col=group_col,
-            title=f"{metric} (by {sex_col})",
-            filename=build_plot_filename(metric, group_col_plot=sex_col)
-        )
-
-        plot_summary_stripplot(
-            summary_df,
-            metric=metric,
-            x_col="Combined_Group",
-            title=f"{metric} ({sex_col} x {group_col})",
-            filename=build_plot_filename(metric, group_col_plot=f"{sex_col}_{group_col}")
-        )
-
-        plot_split_second_third(
-            summary_df,
-            split_col=sex_col,
-            compare_col=group_col,
-            plot_func=lambda data, group_col_plot, title, filename, metric=metric:
-                plot_summary_stripplot(
-                    data,
-                    metric=metric,
-                    x_col=group_col_plot,
-                    title=title,
-                    filename=filename
-                ),
-            metric_name=metric,
-            title_prefix=metric
-        )
-
-        plot_split_second_third(
-            summary_df,
-            split_col=group_col,
-            compare_col=sex_col,
-            plot_func=lambda data, group_col_plot, title, filename, metric=metric:
-                plot_summary_stripplot(
-                    data,
-                    metric=metric,
-                    x_col=group_col_plot,
-                    title=title,
-                    filename=filename
-                ),
-            metric_name=metric,
-            title_prefix=metric
-        )
-
-    trial_plot_metrics = {
-        "CumulativePellets": "Cumulative Pellets",
-        "FR": "FR",
-        "Duration_min": "Duration (min)",
-        "PokesPerPellet": "Pokes Per Pellet",
-        "ActivePokesPerPellet": "Active Pokes Per Pellet",
-        "ActivePokes": "Active Pokes",
-        "InactivePokes": "Inactive Pokes",
-        "TotalPokes": "Total Pokes",
-        "Accuracy": "Accuracy (%)",
-        "InactivePokePercent": "Inactive Pokes (%)",
-        "Vigor": "Vigor (Active Pokes/min)",
-        "TotalPokeRate": "Total Pokes/min",
-        "InactivePokeRate": "Inactive Pokes/min",
-        "RetrievalTime": "Retrieval Time",
-        "InterPelletInterval": "Interpellet Interval",
-        "CumulativeActivePokes": "Cumulative Active Pokes",
-        "CumulativeTotalPokes": "Cumulative Total Pokes"
-    }
-
-    for metric, ylabel in trial_plot_metrics.items():
-
-        trial_plot_func = (
-            lambda data, group_col_plot, title, filename, metric=metric, ylabel=ylabel, x_col="Trial":
-                plot_trial_trajectory(
-                    data,
-                    metric=metric,
-                    group_col_plot=group_col_plot,
-                    title=title,
-                    filename=filename,
-                    ylabel=ylabel,
-                    x_col=x_col
-                )
-        )
-
-        trial_plot_func(
-            completed_trials,
-            group_col_plot=group_col,
-            title=f"{ylabel} (by {group_col})",
-            filename=build_plot_filename(metric, group_col_plot=group_col)
-        )
-
-        trial_plot_func(
-            completed_trials,
-            group_col_plot=sex_col,
-            title=f"{ylabel} (by {sex_col})",
-            filename=build_plot_filename(metric, group_col_plot=sex_col)
-        )
-
-        plot_split_second_third(
-            completed_trials,
-            split_col=sex_col,
-            compare_col=group_col,
-            plot_func=trial_plot_func,
-            metric_name=metric,
-            title_prefix=ylabel
-        )
-
-        plot_split_second_third(
-            completed_trials,
-            split_col=group_col,
-            compare_col=sex_col,
-            plot_func=trial_plot_func,
-            metric_name=metric,
-            title_prefix=ylabel
-        )
-
-        if use_phase:
-
-            for phase, d_phase in completed_trials.groupby("Phase"):
-                d_phase_exclusive = d_phase[
-                    d_phase["PhaseCrossing"].eq(False)
-                ].copy()
-
-                trial_plot_func(
-                    d_phase,
-                    group_col_plot=group_col,
-                    title=f"{ylabel} (by {group_col}, {phase})",
-                    filename=build_plot_filename(metric, group_col_plot=group_col, phase=phase),
-                    x_col="PhaseTrial"
-                )
-
-                trial_plot_func(
-                    d_phase,
-                    group_col_plot=sex_col,
-                    title=f"{ylabel} (by {sex_col}, {phase})",
-                    filename=build_plot_filename(metric, group_col_plot=sex_col, phase=phase),
-                    x_col="PhaseTrial"
-                )
-
-                trial_plot_func(
-                    d_phase_exclusive,
-                    group_col_plot=group_col,
-                    title=f"{ylabel} (by {group_col}, {phase}, Exclusive)",
-                    filename=build_plot_filename(metric, group_col_plot=group_col, phase=phase, exclusive=True),
-                    x_col="ExclusivePhaseTrial"
-                )
-
-                trial_plot_func(
-                    d_phase_exclusive,
-                    group_col_plot=sex_col,
-                    title=f"{ylabel} (by {sex_col}, {phase}, Exclusive)",
-                    filename=build_plot_filename(metric, group_col_plot=sex_col, phase=phase, exclusive=True),
-                    x_col="ExclusivePhaseTrial"
-                )
-
-            plot_split_second_third_phase(
-                completed_trials,
-                split_col=sex_col,
-                compare_col=group_col,
-                plot_func=trial_plot_func,
-                metric_name=metric,
-                title_prefix=ylabel
-            )
-
-            plot_split_second_third_phase(
-                completed_trials,
-                split_col=group_col,
-                compare_col=sex_col,
-                plot_func=trial_plot_func,
-                metric_name=metric,
-                title_prefix=ylabel
-            )
-
-            completed_trials_exclusive = completed_trials[
-                completed_trials["PhaseCrossing"].eq(False)
-            ].copy()
-
-            plot_split_second_third_phase(
-                completed_trials_exclusive,
-                split_col=sex_col,
-                compare_col=group_col,
-                plot_func=trial_plot_func,
-                metric_name=metric,
-                title_prefix=f"{ylabel} Exclusive",
-                x_col="ExclusivePhaseTrial",
-                exclusive=True
-            )
-
-            plot_split_second_third_phase(
-                completed_trials_exclusive,
-                split_col=group_col,
-                compare_col=sex_col,
-                plot_func=trial_plot_func,
-                metric_name=metric,
-                title_prefix=f"{ylabel} Exclusive",
-                x_col="ExclusivePhaseTrial",
-                exclusive=True
-            )
-
-    demand_plot_metrics = {
-        "Pellets": "Pellets",
-        "ActivePokes": "Active Pokes",
-        "InactivePokes": "Inactive Pokes",
-        "TotalPokes": "Total Pokes",
-        "TotalDuration_min": "Total Duration (min)",
-        "PokesPerPellet": "Pokes Per Pellet",
-        "ActivePokesPerPellet": "Active Pokes Per Pellet",
-        "InactivePokesPerPellet": "Inactive Pokes Per Pellet",
-        "PooledAccuracy": "Pooled Accuracy (%)",
-        "MeanAccuracy": "Mean Accuracy (%)",
-        "InactivePokePercent": "Pooled Inactive Pokes (%)",
-        "PelletsPerMinute": "Pellets Per Minute",
-        "MeanVigor": "Mean Vigor (Active Pokes/min)",
-        "MeanTotalPokeRate": "Mean Total Pokes/min",
-        "MeanInactivePokeRate": "Mean Inactive Pokes/min",
-        "MeanInactivePokePercent": "Mean Inactive Pokes (%)",
-        "MeanDuration_min": "Mean Duration (min)",
-        "MeanRetrievalTime": "Mean Retrieval Time",
-        "MeanInterPelletInterval": "Mean Interpellet Interval"
-    }
-
-    if not demand_df.empty:
-
-        for metric, ylabel in demand_plot_metrics.items():
-
-            demand_plot_func = (
-                lambda data, group_col_plot, title, filename, metric=metric, ylabel=ylabel:
-                    plot_demand(
-                        data,
-                        metric=metric,
-                        group_col_plot=group_col_plot,
-                        title=title,
-                        filename=filename,
-                        ylabel=ylabel
-                    )
-            )
-
-            demand_plot_func(
-                demand_df,
-                group_col_plot=group_col,
-                title=f"Demand: {ylabel} by FR ({group_col})",
-                filename=build_plot_filename(f"Demand_{metric}", group_col_plot=group_col)
-            )
-
-            demand_plot_func(
-                demand_df,
-                group_col_plot=sex_col,
-                title=f"Demand: {ylabel} by FR ({sex_col})",
-                filename=build_plot_filename(f"Demand_{metric}", group_col_plot=sex_col)
-            )
-
-            plot_split_second_third(
-                demand_df,
-                split_col=sex_col,
-                compare_col=group_col,
-                plot_func=demand_plot_func,
-                metric_name=f"Demand_{metric}",
-                title_prefix=f"Demand: {ylabel} by FR"
-            )
-
-            plot_split_second_third(
-                demand_df,
-                split_col=group_col,
-                compare_col=sex_col,
-                plot_func=demand_plot_func,
-                metric_name=f"Demand_{metric}",
-                title_prefix=f"Demand: {ylabel} by FR"
-            )
-
-            if use_phase and not phase_demand_df.empty:
-
-                for phase, d_phase in phase_demand_df.groupby("Phase"):
-
-                    demand_plot_func(
-                        d_phase,
-                        group_col_plot=group_col,
-                        title=f"Demand: {ylabel} by FR ({group_col}, {phase})",
-                        filename=build_plot_filename(f"Demand_{metric}", group_col_plot=group_col, phase=phase)
-                    )
-
-                    demand_plot_func(
-                        d_phase,
-                        group_col_plot=sex_col,
-                        title=f"Demand: {ylabel} by FR ({sex_col}, {phase})",
-                        filename=build_plot_filename(f"Demand_{metric}", group_col_plot=sex_col, phase=phase)
-                    )
-
-                plot_split_second_third_demand_phase(
-                    phase_demand_df,
-                    split_col=sex_col,
-                    compare_col=group_col,
-                    plot_func=demand_plot_func,
-                    metric_name=f"Demand_{metric}",
-                    title_prefix=f"Demand: {ylabel} by FR"
-                )
-
-                plot_split_second_third_demand_phase(
-                    phase_demand_df,
-                    split_col=group_col,
-                    compare_col=sex_col,
-                    plot_func=demand_plot_func,
-                    metric_name=f"Demand_{metric}",
-                    title_prefix=f"Demand: {ylabel} by FR"
-                )
-
-            if use_phase and not phase_demand_exclusive_df.empty:
-
-                for phase, d_phase in phase_demand_exclusive_df.groupby("Phase"):
-
-                    demand_plot_func(
-                        d_phase,
-                        group_col_plot=group_col,
-                        title=f"Demand: {ylabel} by FR ({group_col}, {phase}, Exclusive)",
-                        filename=build_plot_filename(f"Demand_{metric}", group_col_plot=group_col, phase=phase, exclusive=True)
-                    )
-
-                    demand_plot_func(
-                        d_phase,
-                        group_col_plot=sex_col,
-                        title=f"Demand: {ylabel} by FR ({sex_col}, {phase}, Exclusive)",
-                        filename=build_plot_filename(f"Demand_{metric}", group_col_plot=sex_col, phase=phase, exclusive=True)
-                    )
-
-                plot_split_second_third_demand_phase(
-                    phase_demand_exclusive_df,
-                    split_col=sex_col,
-                    compare_col=group_col,
-                    plot_func=demand_plot_func,
-                    metric_name=f"Demand_{metric}",
-                    title_prefix=f"Demand: {ylabel} by FR Exclusive",
-                    exclusive=True
-                )
-
-                plot_split_second_third_demand_phase(
-                    phase_demand_exclusive_df,
-                    split_col=group_col,
-                    compare_col=sex_col,
-                    plot_func=demand_plot_func,
-                    metric_name=f"Demand_{metric}",
-                    title_prefix=f"Demand: {ylabel} by FR Exclusive",
-                    exclusive=True
-                )
-
-    plot_group_sex_heatmap(
+    pca_results = run_mouse_pca(
         summary_df,
-        title=f"ClosedEcon PR1 Summary ({group_col} x {sex_col})",
-        filename=build_plot_filename("ClosedEconPR1_heatmap", group_col_plot=f"{group_col}_{sex_col}")
+        mouse_col,
+        sex_col,
+        group_col,
+    )
+    phase_pca_scores_df, phase_pca_input_df = project_phase_pca(
+        phase_summary_df,
+        pca_results,
+        mouse_col,
+        sex_col,
+        group_col,
     )
 
-    if processing_errors:
-        error_path = os.path.join(
-            save_folder,
-            "ClosedEconPR1_processing_errors.txt",
-        )
+    analysis_settings_df = pd.DataFrame([
+        {
+            "Setting": "Rolling accuracy window",
+            "Value": rolling_window,
+            "Units": "trials",
+            "Notes": "Number of trials used for rolling accuracy calculations.",
+        },
+        {
+            "Setting": "Peri-stop window",
+            "Value": peri_window,
+            "Units": "trials before/after anchor",
+            "Notes": "Number of reconstructed trials extracted before and after each Stop anchor.",
+        },
+        {
+            "Setting": "Light/dark analysis enabled",
+            "Value": use_phase,
+            "Units": "",
+            "Notes": "If TRUE, phase-specific summaries, exports, and plots are generated.",
+        },
+        {
+            "Setting": "Light cycle start",
+            "Value": light_start if use_phase else "Not used",
+            "Units": "HH:MM",
+            "Notes": "User-entered light-cycle start time.",
+        },
+        {
+            "Setting": "Light cycle end",
+            "Value": light_end if use_phase else "Not used",
+            "Units": "HH:MM",
+            "Notes": "User-entered light-cycle end time.",
+        },
+        {
+            "Setting": "Regular omission timeout",
+            "Value": regular_omission_timeout_s,
+            "Units": "seconds",
+            "Notes": "Added after Regular LN terminal events when calculating AvailabilityTime.",
+        },
+        {
+            "Setting": "Stop-error noise duration",
+            "Value": stop_error_noise_s,
+            "Units": "seconds",
+            "Notes": "Noise duration added after Stop LR terminal events.",
+        },
+        {
+            "Setting": "Stop-error timeout duration",
+            "Value": stop_error_timeout_s,
+            "Units": "seconds",
+            "Notes": "Timeout duration added after the Stop LR noise period.",
+        },
+        {
+            "Setting": "Stop-error total lockout",
+            "Value": stop_error_noise_s + stop_error_timeout_s,
+            "Units": "seconds",
+            "Notes": "StopErrorNoise_s + StopErrorTimeout_s; used after Stop LR.",
+        },
+        {
+            "Setting": "Stop-signal delay",
+            "Value": stop_signal_delay_ms,
+            "Units": "milliseconds",
+            "Notes": "Saved with each trial for documentation.",
+        },
+        {
+            "Setting": "Response window",
+            "Value": response_window_s,
+            "Units": "seconds",
+            "Notes": "Saved with each trial for documentation.",
+        },
+        {
+            "Setting": "Mouse ID metadata column",
+            "Value": mouse_col,
+            "Units": "",
+            "Notes": "Metadata column used as the mouse identifier.",
+        },
+        {
+            "Setting": "Sex metadata column",
+            "Value": sex_col,
+            "Units": "",
+            "Notes": "Metadata column used for sex grouping.",
+        },
+        {
+            "Setting": "Group metadata column",
+            "Value": group_col,
+            "Units": "",
+            "Notes": "Metadata column used for genotype/group plotting.",
+        },
+    ])
+
+    # -------------------------
+    # STEP 7: EXCEL EXPORT
+    # -------------------------
+    output_path = os.path.join(save_folder, "StopSig_EXTRAS.xlsx")
+    write_outputs(
+        output_path,
+        trials_all_df,
+        summary_df,
+        type_summary_df,
+        event_counts_df,
+        phase_summary_df,
+        peri_stop_df,
+        pca_results,
+        phase_pca_scores_df,
+        phase_pca_input_df,
+        analysis_settings_df,
+        mouse_col,
+        sex_col,
+        group_col,
+        use_phase,
+    )
+
+    # -------------------------
+    # STEP 8: GRAPH GENERATION
+    # -------------------------
+    plot_folder = os.path.join(save_folder, "StopSig_Plots")
+    create_plots(
+        trials_all_df,
+        summary_df,
+        phase_summary_df,
+        peri_stop_df,
+        pca_results,
+        phase_pca_scores_df,
+        plot_folder,
+        mouse_col,
+        sex_col,
+        group_col,
+        use_phase,
+        color_maps,
+        show_plots,
+    )
+
+    print(f"\nStopSig workbook saved:\n{output_path}")
+    print(f"StopSig plots saved:\n{plot_folder}")
+
+    if errors:
+        error_path = os.path.join(save_folder, "StopSig_processing_errors.txt")
         with open(error_path, "w", encoding="utf-8") as error_file:
-            error_file.write("\n".join(processing_errors))
-        print(f"\nSome files were skipped. Details saved to:\n{error_path}")
-
-    print(f"\nPrism-ready file saved:\n{output_path}")
-
-    messagebox.showinfo(
-        "Done",
-        f"ClosedEcon PR1 analysis complete.\n\nSaved:\n{output_path}"
-    )
-
-    root.destroy()
-
-
-def main():
-    try:
-        run_gui()
-    except Exception as error:
-        try:
-            messagebox.showerror(
-                "ClosedEcon PR1 Error",
-                f"The analysis stopped because of an unexpected error:\n\n{error}",
-            )
-        except Exception:
-            pass
-        raise
-
+            error_file.write("\n".join(errors))
+        print(f"Some files were skipped. Details saved to:\n{error_path}")
 
 
 if __name__ == "__main__":
-    main()
+    run_gui()
