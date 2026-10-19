@@ -192,6 +192,64 @@ def validate_time(value):
         return False
 
 
+def clean_metadata_table(metadata):
+    """Trim metadata headings and text values without changing their case."""
+    cleaned = metadata.copy()
+    cleaned.columns = [
+        value.strip() if isinstance(value, str) else value
+        for value in cleaned.columns
+    ]
+    return cleaned.apply(
+        lambda column: column.map(
+            lambda value: value.strip()
+            if isinstance(value, str)
+            else value
+        )
+    )
+
+
+def sort_metadata_for_wide_tables(
+    metadata,
+    mouse_col,
+    metadata_columns,
+):
+    """Sort by user metadata fields, then naturally by mouse identifier."""
+    sortable = metadata.copy()
+    sort_columns = []
+
+    for position, column in enumerate(metadata_columns):
+        if column not in sortable.columns or column == mouse_col:
+            continue
+        helper = f"__metadata_sort_{position}"
+        sortable[helper] = sortable[column].map(
+            lambda value: "\uffff"
+            if pd.isna(value)
+            else str(value).strip().casefold()
+        )
+        sort_columns.append(helper)
+
+    sortable["__mouse_numeric"] = pd.to_numeric(
+        sortable[mouse_col],
+        errors="coerce",
+    )
+    sortable["__mouse_text"] = sortable[mouse_col].map(
+        lambda value: "\uffff"
+        if pd.isna(value)
+        else str(value).strip().casefold()
+    )
+    sort_columns.extend(["__mouse_numeric", "__mouse_text"])
+
+    return (
+        sortable
+        .sort_values(
+            sort_columns,
+            kind="stable",
+            na_position="last",
+        )
+        .drop(columns=sort_columns)
+    )
+
+
 def parse_timestamps(series):
     cleaned = (
         series
@@ -317,13 +375,7 @@ def collect_metadata(root, file_map, save_folder):
         if not metadata_path:
             return None
         metadata_df = pd.read_excel(metadata_path)
-        return metadata_df.apply(
-            lambda column: column.map(
-                lambda value: value.strip()
-                if isinstance(value, str)
-                else value
-            )
-        )
+        return clean_metadata_table(metadata_df)
 
     window = tk.Toplevel(root)
     window.title("Enter StopSig Metadata")
@@ -372,7 +424,10 @@ def collect_metadata(root, file_map, save_folder):
     result = {"data": None}
 
     def collect():
-        column_names = [header_entries[index].get() for index in [1, 2, 3]]
+        column_names = [
+            header_entries[index].get().strip()
+            for index in [1, 2, 3]
+        ]
         data = []
         for filename, entries in rows:
             data.append({
@@ -381,7 +436,7 @@ def collect_metadata(root, file_map, save_folder):
                 column_names[1]: entries[1].get(),
                 column_names[2]: entries[2].get(),
             })
-        result["data"] = pd.DataFrame(data)
+        result["data"] = clean_metadata_table(pd.DataFrame(data))
         result["data"].to_excel(
             os.path.join(save_folder, "StopSig_Metadata.xlsx"),
             index=False,
@@ -1449,9 +1504,23 @@ def prism_trial_table(
     metadata = (
         data[[mouse_col, sex_col, group_col]]
         .drop_duplicates(subset=[mouse_col])
-        .set_index(mouse_col)
     )
-    ordered_mice = list(wide.columns)
+    metadata = sort_metadata_for_wide_tables(
+        metadata,
+        mouse_col,
+        [sex_col, group_col],
+    )
+    requested_order = metadata[mouse_col].tolist()
+    ordered_mice = [
+        mouse for mouse in requested_order
+        if mouse in wide.columns
+    ]
+    ordered_mice.extend(
+        mouse for mouse in wide.columns
+        if mouse not in ordered_mice
+    )
+    wide = wide.loc[:, ordered_mice]
+    metadata = metadata.set_index(mouse_col)
     header = pd.DataFrame(
         [
             [metadata.at[mouse, group_col] for mouse in ordered_mice],
