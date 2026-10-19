@@ -541,6 +541,30 @@ def generate_results_closedecon(df_short, results, name):
     
     return(results)
 
+def add_block_duration_metrics(df_short, results, name):
+    
+    # Calculate block duration consistently from the universal block numbers.
+    # Individual block outputs already contain Length (mins), so only add the
+    # summary metrics to cycles, days and totals.
+    if name != "Blocks":
+        block_durations = df_short.groupby("Blocks")["Time"].apply(
+            lambda times: (times.iloc[-1] - times.iloc[0]).total_seconds() / 60
+        )
+        results["Average block duration (mins)"] = block_durations.mean()
+        results["Sum of block durations (mins)"] = block_durations.sum()
+    
+    return(results)
+
+def generate_results_closedecon_pr1(df_short, results, name):
+    
+    # Add the shared closed-economy metrics.
+    results = generate_results_closedecon(df_short, results, name)
+    
+    # Add block-duration summaries using the same logic as Bandit.
+    results = add_block_duration_metrics(df_short, results, name)
+    
+    return(results)
+
 def generate_results_stopsig(df_short, results, name):
     
     results = generate_results_closedecon(df_short, results, name)
@@ -549,7 +573,7 @@ def generate_results_stopsig(df_short, results, name):
     
     return(results)
 
-def generate_results_bandit1(df_short, results):
+def generate_results_bandit1(df_short, results, name):
     
     # Collect statistics.
     # Notice that "LeftinTimeOut" and "RightinTimeout" have slightly different capitals.
@@ -558,7 +582,7 @@ def generate_results_bandit1(df_short, results):
     pokes_dispense    = df_short["Event"].isin(["LeftDuringDispense", "RightDuringDispense"]).sum()
     pokes_timeout     = df_short["Event"].isin(["LeftinTimeOut", "RightinTimeout"]).sum()
     pokes_pellet      = df_short["Event"].isin(["LeftWithPellet", "RightWithPellet"]).sum()
-    
+
     # Add these variables to the results dictionary.
     results["Pellets to switch"]     = pellets_to_switch
     results["Num reversals"]         = num_reversals
@@ -620,8 +644,8 @@ def generate_results_bandit2(df_short, results):
     results["Win"]                  = win
     results["High prob win"]        = high_prob_win
     results["Low prob win"]         = low_prob_win
-    # results["Win-stay"]             = win_stay
-    # results["Win-shift"]            = win_shift
+    results["Win-stay"]             = win_stay
+    results["Win-shift"]            = win_shift
     results["High prob win-stay"]   = high_prob_win_stay
     results["High prob win-shift"]  = high_prob_win_shift
     results["Low prob win-stay"]    = low_prob_win_stay
@@ -629,8 +653,8 @@ def generate_results_bandit2(df_short, results):
     results["Loss"]                 = loss
     results["High prob loss"]       = high_prob_loss
     results["Low prob loss"]        = low_prob_loss
-    # results["Lose-stay"]            = lose_stay
-    # results["Lose-shift"]           = lose_shift
+    results["Lose-stay"]            = lose_stay
+    results["Lose-shift"]           = lose_shift
     results["High prob lose-stay"]  = high_prob_lose_stay
     results["High prob lose-shift"] = high_prob_lose_shift
     results["Low prob lose-stay"]   = low_prob_lose_stay
@@ -643,11 +667,13 @@ def generate_results_bandit2(df_short, results):
     percentage4  = per(high_prob_loss, high_prob_win + high_prob_loss)
     percentage5  = per(low_prob_win,   low_prob_win  + low_prob_loss)
     percentage6  = per(low_prob_loss,  low_prob_win  + low_prob_loss)
-    percentage7  = per(win_stay,  win_stay + win_shift)
-    percentage8  = per(lose_shift, lose_stay + lose_shift)
-    percentage9  = per(win_shift + lose_shift, win_stay + win_shift + lose_stay + lose_shift)
-    percentage10 = (percentage7 + percentage8) / 2
-    outcome_sensitivity = (percentage8 - (100 - percentage7)) / 100
+    percentage7  = per(win_stay,   win_stay + win_shift)
+    percentage8  = per(win_shift,  win_stay + win_shift)
+    percentage9  = per(lose_stay,  lose_stay + lose_shift)
+    percentage10 = per(lose_shift, lose_stay + lose_shift)
+    percentage11 = per(win_shift + lose_shift, win_stay + win_shift + lose_stay + lose_shift)
+    percentage12 = (percentage7 + percentage10) / 2
+    outcome_sensitivity = (percentage10 - (100 - percentage7)) / 100
 
     # Add these percentages to the results.
     results["Win/(win+loss) (%)"]             = percentage1
@@ -657,9 +683,11 @@ def generate_results_bandit2(df_short, results):
     results["LP win/(LP win + LP loss) (%)"]  = percentage5
     results["LP loss/(LP win + LP loss) (%)"] = percentage6
     results["Win-stay (%)"]                   = percentage7
-    results["Lose-shift (%)"]                 = percentage8
-    results["Switch rate (%)"]                = percentage9
-    results["Learning index (%)"]             = percentage10
+    results["Win-shift (%)"]                  = percentage8
+    results["Lose-stay (%)"]                  = percentage9
+    results["Lose-shift (%)"]                 = percentage10
+    results["Switch rate (%)"]                = percentage11
+    results["Learning index (%)"]             = percentage12
     results["Outcome sensitivity"]            = outcome_sensitivity
     
     return(results)
@@ -667,7 +695,8 @@ def generate_results_bandit2(df_short, results):
 def generate_results_bandit(df_short, results, name):
     
     results = generate_results_closedecon(df_short, results, name)
-    results = generate_results_bandit1(df_short, results)
+    results = add_block_duration_metrics(df_short, results, name)
+    results = generate_results_bandit1(df_short, results, name)
     results = generate_results_bandit2(df_short, results)
     
     return(results)
@@ -826,7 +855,7 @@ def analyse_FED_file(df, inputs):
         df = add_time_info(df, inputs)
         
         # Collect statistics grouped by blocks, cycles and days.
-        closedecon = collect_data_subsets(df, inputs, generate_results_closedecon)
+        closedecon = collect_data_subsets(df, inputs, generate_results_closedecon_pr1)
     
     if inputs["Session Type"] == "Bandit":
         # Add block, light/dark cycle and day information as columns.
