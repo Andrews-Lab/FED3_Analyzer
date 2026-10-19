@@ -52,6 +52,8 @@ BANDIT_SUM_METRICS = {
     "High prob win",
     "Low prob win",
 
+    "Win-stay",
+    "Win-shift",
     "High prob win-stay",
     "High prob win-shift",
     "Low prob win-stay",
@@ -61,6 +63,8 @@ BANDIT_SUM_METRICS = {
     "High prob loss",
     "Low prob loss",
 
+    "Lose-stay",
+    "Lose-shift",
     "High prob lose-stay",
     "High prob lose-shift",
     "Low prob lose-stay",
