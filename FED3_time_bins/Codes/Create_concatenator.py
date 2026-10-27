@@ -78,13 +78,32 @@ def read_fed_csv(file_path):
 def concatenate_csvs(file_paths):
     dfs = []
 
+    # Sort whole recordings before count offsets and Bandit cleanup.
+    # Preserve row order within each file for the existing restart safeguards.
+    recordings = []
+    for path in file_paths:
+        df = read_fed_csv(path)
+        time_col = next((c for c in ["MM:DD:YYYY hh:mm:ss", "Timestamp"]
+                         if c in df.columns), None)
+        if time_col is None or df.empty:
+            raise ValueError(f"Cannot determine recording start time: {os.path.basename(path)}")
+        start = pd.to_datetime(df[time_col].iloc[0], errors="coerce")
+        if pd.isna(start):
+            raise ValueError(f"Invalid first timestamp: {os.path.basename(path)}")
+        recordings.append((start, path, df))
+    if not recordings:
+        raise ValueError("No files were selected.")
+    recordings.sort(key=lambda recording: recording[0])
+    print("\nChronological concatenation order:")
+    for start, path, _ in recordings:
+        print(f" - {os.path.basename(path)} ({start})")
+
     # Track running totals for key count columns
     pellet_offset = 0
     left_poke_offset = 0
     right_poke_offset = 0
 
-    for i, path in enumerate(file_paths):
-        df = read_fed_csv(path)
+    for i, (_, path, df) in enumerate(recordings):
 
         # Adjust count columns to continue across sessions
         if "Pellet_Count" in df.columns:
@@ -136,7 +155,11 @@ def run_concatenator_gui():
     for file in file_paths:
         print(f" - {os.path.basename(file)}")
 
-    df = concatenate_csvs(file_paths)
+    try:
+        df = concatenate_csvs(file_paths)
+    except ValueError as error:
+        messagebox.showerror("Concatenation Error", str(error))
+        return
 
     save_path = filedialog.asksaveasfilename(
         defaultextension=".csv",
@@ -152,3 +175,4 @@ def run_concatenator_gui():
 
 if __name__ == "__main__":
     run_concatenator_gui()
+
