@@ -2942,6 +2942,237 @@ def create_plots(
 # ------------------------------------------------------------
 # MAIN GUI AND ANALYSIS WORKFLOW
 # ------------------------------------------------------------
+# ------------------------------------------------------------
+# ANALYSIS AND PLOT SETTINGS WINDOW
+# ------------------------------------------------------------
+
+def collect_analysis_settings(root, task, metadata_df, sex_col, group_col):
+    from tkinter import ttk
+    import sys
+
+    # Keep file selection and metadata entry in their existing windows.
+    settings_window = tk.Toplevel(root)
+    settings_window.title(f"{task} Analysis and Plot Options")
+    settings_window.rowconfigure(0, weight=1)
+    settings_window.columnconfigure(0, weight=1)
+    settings_window.resizable(True, True)
+    canvas = tk.Canvas(settings_window, highlightthickness=0)
+    scrollbar = ttk.Scrollbar(settings_window, orient="vertical", command=canvas.yview)
+    canvas.configure(yscrollcommand=scrollbar.set)
+    canvas.grid(row=0, column=0, sticky="nsew")
+    scrollbar.grid(row=0, column=1, sticky="ns")
+    content = ttk.Frame(canvas, padding=12)
+    content.columnconfigure(0, weight=1)
+    content_id = canvas.create_window((0, 0), window=content, anchor="nw")
+    content.bind("<Configure>", lambda event: canvas.configure(scrollregion=canvas.bbox("all")))
+    canvas.bind("<Configure>", lambda event: canvas.itemconfigure(content_id, width=event.width))
+
+    def scroll_settings(event):
+        if content.winfo_reqheight() <= canvas.winfo_height():
+            return
+        if getattr(event, "num", None) in [4, 5]:
+            units = -1 if event.num == 4 else 1
+        else:
+            delta = getattr(event, "delta", 0)
+            if not delta:
+                return
+            units = (-1 if delta > 0 else 1) if sys.platform == "darwin" else int(-delta / 120)
+            if not units:
+                units = -1 if delta > 0 else 1
+        canvas.yview_scroll(units, "units")
+        return "break"
+
+    for sequence in ["<MouseWheel>", "<Button-4>", "<Button-5>"]:
+        settings_window.bind(sequence, scroll_settings)
+    result = {}
+    use_phase_var = tk.BooleanVar(master=settings_window, value=False)
+    create_graphs_var = tk.BooleanVar(master=settings_window, value=True)
+    display_var = tk.BooleanVar(master=settings_window, value=False)
+    extra_var = tk.BooleanVar(master=settings_window, value=False)
+    incomplete_var = tk.BooleanVar(master=settings_window, value=False)
+    active_var = tk.StringVar(master=settings_window, value="Auto")
+
+    # -------------------------
+    # LIGHT/DARK SETTINGS
+    # -------------------------
+    phase_frame = ttk.LabelFrame(content, text="1. Light/Dark analysis", padding=10)
+    phase_frame.grid(row=0, column=0, sticky="ew", pady=(0, 8))
+    ttk.Checkbutton(phase_frame, text="Split outputs by Light/Dark cycle", variable=use_phase_var).grid(
+        row=0, column=0, columnspan=2, sticky="w")
+    phase_entries = []
+    for row, (label, default) in enumerate([("Light start (HH:MM)", "07:00"),
+                                           ("Light end (HH:MM)", "19:00")], start=1):
+        ttk.Label(phase_frame, text=label).grid(row=row, column=0, sticky="w", pady=4)
+        entry = ttk.Entry(phase_frame, width=12)
+        entry.insert(0, default)
+        entry.grid(row=row, column=1, sticky="w", padx=12)
+        phase_entries.append(entry)
+
+    def update_phase(*_args):
+        for entry in phase_entries:
+            entry.configure(state="normal" if use_phase_var.get() else "disabled")
+
+    use_phase_var.trace_add("write", update_phase)
+    update_phase()
+
+    # -------------------------
+    # TASK-SPECIFIC SETTINGS
+    # -------------------------
+    analysis_frame = ttk.LabelFrame(content, text="2. Analysis settings", padding=10)
+    analysis_frame.grid(row=1, column=0, sticky="ew", pady=8)
+    fields = []
+    if task == "Bandit":
+        fields = [("window", "EMA smoothing window (trials)", 100, 1),
+                  ("peak_window", "Trials each side of a switch", 11, 1)]
+    elif task == "StopSig":
+        fields = [("rolling_window", "Rolling accuracy window (trials)", 20, 1),
+                  ("peri_window", "Trials each side of a stop trial", 10, 1),
+                  ("regular_omission_timeout_s", "Regular omission timeout (s)", DEFAULT_REGULAR_OMISSION_TIMEOUT_S, 0),
+                  ("stop_error_noise_s", "Stop-error noise duration (s)", DEFAULT_STOP_ERROR_NOISE_S, 0),
+                  ("stop_error_timeout_s", "Stop-error timeout (s)", DEFAULT_STOP_ERROR_TIMEOUT_S, 0),
+                  ("stop_signal_delay_ms", "Stop-signal delay (ms; documentation)", DEFAULT_STOP_SIGNAL_DELAY_MS, 0),
+                  ("response_window_s", "Response window (s; documentation)", DEFAULT_RESPONSE_WINDOW_S, 1)]
+    entries = {}
+    for row, (key, label, default, minimum) in enumerate(fields):
+        ttk.Label(analysis_frame, text=label).grid(row=row, column=0, sticky="w", pady=4)
+        entry = ttk.Entry(analysis_frame, width=12)
+        entry.insert(0, str(default))
+        entry.grid(row=row, column=1, sticky="w", padx=12)
+        entries[key] = entry
+    if task == "ClosedEconPR1":
+        ttk.Label(analysis_frame, text="Active poke side").grid(row=0, column=0, sticky="w")
+        ttk.Combobox(analysis_frame, textvariable=active_var, values=["Auto", "Left", "Right"],
+                     state="readonly", width=12).grid(row=0, column=1, sticky="w", padx=12)
+        ttk.Label(analysis_frame, text="Auto uses a consistent Active_Poke column when available.",
+                  wraplength=480).grid(row=1, column=0, columnspan=2, sticky="w", pady=6)
+        ttk.Checkbutton(analysis_frame, text="Include the final unfinished ratio interval",
+                        variable=incomplete_var).grid(row=2, column=0, columnspan=2, sticky="w")
+    elif task == "StopSig":
+        ttk.Label(analysis_frame, text="Stop-error lockout = noise duration + timeout duration.",
+                  wraplength=480).grid(row=len(fields), column=0, columnspan=2, sticky="w", pady=6)
+
+    # -------------------------
+    # PCA FEATURE GROUPS
+    # -------------------------
+    pca_vars = {}
+    if task == "Bandit":
+        pca_frame = ttk.LabelFrame(content, text="3. PCA feature groups", padding=10)
+        pca_frame.grid(row=2, column=0, sticky="ew", pady=8)
+        ttk.Label(pca_frame, text="PCA tables are calculated even when graphs are disabled.",
+                  wraplength=480).grid(row=0, column=0, sticky="w", pady=(0, 6))
+        for row, (key, label, default) in enumerate([
+            ("OR", "Odds ratios", True),
+            ("Basic", "Basic stay/shift metrics", True),
+            ("Extended", "Extended behaviour metrics", True),
+            ("HighLow", "High/low probability metrics", False)
+        ], start=1):
+            variable = tk.BooleanVar(master=settings_window, value=default)
+            pca_vars[key] = variable
+            ttk.Checkbutton(pca_frame, text=label, variable=variable).grid(
+                row=row, column=0, sticky="w", pady=2)
+
+    # -------------------------
+    # FIGURE OPTIONS AND COLOURS
+    # -------------------------
+    figure_frame = ttk.LabelFrame(content, text="3. Figures", padding=10)
+    figure_frame.grid(row=3, column=0, sticky="ew", pady=8)
+    ttk.Label(figure_frame, text="Excel outputs are created whether or not graphs are selected.",
+              wraplength=480).grid(row=0, column=0, sticky="w", pady=(0, 6))
+    ttk.Checkbutton(figure_frame, text="Create and save graphs", variable=create_graphs_var).grid(
+        row=1, column=0, sticky="w")
+    display_check = ttk.Checkbutton(figure_frame, text="Also display graphs in Matplotlib windows", variable=display_var)
+    display_check.grid(row=2, column=0, sticky="w", pady=4)
+    extra_check = None
+    if task in ["Bandit", "ClosedEconPR1"]:
+        label = ("Create stacked cumulative-wins / strategy plots" if task == "Bandit"
+                 else "Save individual mouse versions of stacked timecourse plots")
+        extra_check = ttk.Checkbutton(figure_frame, text=label, variable=extra_var)
+        extra_check.grid(row=3, column=0, sticky="w", pady=4)
+    colour_frame = ttk.LabelFrame(content, text="4. Custom plot colours (optional)", padding=10)
+    colour_frame.grid(row=4, column=0, sticky="ew", pady=8)
+    picked_colors = {group_col: {}, sex_col: {}}
+    colour_buttons = []
+    row = 0
+    for field in dict.fromkeys([group_col, sex_col]):
+        ttk.Label(colour_frame, text=str(field), font=("Arial", 10, "bold")).grid(
+            row=row, column=0, columnspan=2, sticky="w", pady=4)
+        row += 1
+        values = sorted({str(value) for value in metadata_df[field].dropna() if str(value).strip()})
+        for value in values:
+            ttk.Label(colour_frame, text=value, wraplength=300).grid(row=row, column=0, sticky="w", pady=3)
+            button = ttk.Button(colour_frame, text="Choose colour")
+            def choose_colour(field=field, value=value, button=button):
+                color = colorchooser.askcolor(parent=settings_window,
+                    title=f"Choose colour for {value}")[1]
+                if color:
+                    picked_colors[field][value] = color
+                    button.configure(text=color)
+            button.configure(command=choose_colour)
+            button.grid(row=row, column=1, sticky="w", padx=12, pady=3)
+            colour_buttons.append(button)
+            row += 1
+        if not values:
+            ttk.Label(colour_frame, text="No populated values; no colours to select.").grid(
+                row=row, column=0, columnspan=2, sticky="w")
+            row += 1
+
+    def update_figures(*_args):
+        state = "normal" if create_graphs_var.get() else "disabled"
+        for control in [display_check, extra_check] + colour_buttons:
+            if control is not None:
+                control.configure(state=state)
+
+    create_graphs_var.trace_add("write", update_figures)
+    update_figures()
+
+    # -------------------------
+    # VALIDATE AND RUN
+    # -------------------------
+    def confirm_settings():
+        values = {}
+        try:
+            for key, label, default, minimum in fields:
+                try:
+                    value = int(entries[key].get().strip())
+                except ValueError:
+                    raise ValueError(f"{label}: enter a whole number.")
+                if value < minimum:
+                    raise ValueError(f"{label}: enter a value of at least {minimum}.")
+                values[key] = value
+            times = [entry.get().strip() for entry in phase_entries]
+            if use_phase_var.get():
+                times = [clean_time_input(value) for value in times]
+                if not all(validate_time(value) for value in times):
+                    raise ValueError("Light start and end must use HH:MM format.")
+            values.update(use_phase=use_phase_var.get(), light_start=times[0], light_end=times[1],
+                          create_graphs=create_graphs_var.get(),
+                          show_plots=create_graphs_var.get() and display_var.get(),
+                          extra_plots=create_graphs_var.get() and extra_var.get(),
+                          active_side=active_var.get().lower(), include_incomplete=incomplete_var.get(),
+                          colors=picked_colors,
+                          pca_groups=[key for key, variable in pca_vars.items() if variable.get()])
+        except ValueError as error:
+            messagebox.showerror("Settings Error", str(error), parent=settings_window)
+            return
+        result.update(values)
+        settings_window.destroy()
+
+    footer = ttk.Frame(settings_window, padding=10)
+    footer.grid(row=1, column=0, columnspan=2, sticky="ew")
+    ttk.Button(footer, text="Cancel", command=settings_window.destroy).pack(side="right", padx=5)
+    ttk.Button(footer, text="Run analysis", command=confirm_settings).pack(side="right", padx=5)
+    settings_window.update_idletasks()
+    width = min(760, max(320, settings_window.winfo_screenwidth() - 80))
+    height = min(content.winfo_reqheight() + footer.winfo_reqheight() + 10,
+                 max(240, settings_window.winfo_screenheight() - 120))
+    x = max(0, (settings_window.winfo_screenwidth() - width) // 2)
+    y = max(0, (settings_window.winfo_screenheight() - height) // 2)
+    settings_window.geometry(f"{width}x{height}+{x}+{y}")
+    settings_window.minsize(min(420, width), min(260, height))
+    root.wait_window(settings_window)
+    return result or None
+
+
 def run_gui():
     # -------------------------
     # STEP 1A: ROOT SETUP
@@ -2963,125 +3194,6 @@ def run_gui():
     save_folder = os.path.dirname(file_paths[0])
 
     # -------------------------
-    # STEP 2A: LIGHT/DARK SETTINGS
-    # -------------------------
-    use_phase = messagebox.askyesno(
-        "Light/Dark Analysis",
-        "Do you want to split trials by Light/Dark cycle?",
-    )
-    light_start = "07:00"
-    light_end = "19:00"
-
-    if use_phase:
-        light_start = clean_time_input(
-            askstring(
-                "Light Cycle",
-                "Enter LIGHT START time (24h HH:MM)",
-                initialvalue="07:00",
-            )
-        )
-        light_end = clean_time_input(
-            askstring(
-                "Light Cycle",
-                "Enter LIGHT END time (24h HH:MM)",
-                initialvalue="19:00",
-            )
-        )
-        if not validate_time(light_start) or not validate_time(light_end):
-            messagebox.showerror(
-                "Invalid Time",
-                "Light start and end must use HH:MM format.",
-            )
-            return
-
-    # -------------------------
-    # STEP 2B: ROLLING WINDOW SETTING
-    # -------------------------
-    rolling_window = askinteger(
-        "Rolling Accuracy Window",
-        "Enter the number of trials used for rolling accuracy.",
-        initialvalue=20,
-        minvalue=1,
-    )
-    if rolling_window is None:
-        return
-
-    # -------------------------
-    # STEP 2C: PERI-STOP WINDOW SETTING
-    # -------------------------
-    peri_window = askinteger(
-        "Peri-Stop Window",
-        "Enter the number of trials before and after each Stop trial.",
-        initialvalue=10,
-        minvalue=1,
-    )
-    if peri_window is None:
-        return
-
-    # -------------------------
-    # STEP 2D: TASK TIMING SETTINGS
-    # -------------------------
-    regular_omission_timeout_s = askinteger(
-        "Task Timing",
-        (
-            "Regular no-poke/omission timeout in seconds.\n\n"
-            "Used after Regular LN trials to calculate next-trial initiation latency."
-        ),
-        initialvalue=DEFAULT_REGULAR_OMISSION_TIMEOUT_S,
-        minvalue=0,
-    )
-    if regular_omission_timeout_s is None:
-        return
-
-    stop_error_noise_s = askinteger(
-        "Task Timing",
-        (
-            "Stop-error noise duration in seconds.\n\n"
-            "Used after Stop LR trials before the timeout period."
-        ),
-        initialvalue=DEFAULT_STOP_ERROR_NOISE_S,
-        minvalue=0,
-    )
-    if stop_error_noise_s is None:
-        return
-
-    stop_error_timeout_s = askinteger(
-        "Task Timing",
-        (
-            "Stop-error timeout duration in seconds.\n\n"
-            "Total Stop LR lockout = noise duration + timeout duration."
-        ),
-        initialvalue=DEFAULT_STOP_ERROR_TIMEOUT_S,
-        minvalue=0,
-    )
-    if stop_error_timeout_s is None:
-        return
-
-    stop_signal_delay_ms = askinteger(
-        "Task Timing",
-        (
-            "Stop-signal delay in milliseconds.\n\n"
-            "This is saved with each trial for documentation."
-        ),
-        initialvalue=DEFAULT_STOP_SIGNAL_DELAY_MS,
-        minvalue=0,
-    )
-    if stop_signal_delay_ms is None:
-        return
-
-    response_window_s = askinteger(
-        "Task Timing",
-        (
-            "Response window in seconds.\n\n"
-            "This is saved with each trial for documentation."
-        ),
-        initialvalue=DEFAULT_RESPONSE_WINDOW_S,
-        minvalue=1,
-    )
-    if response_window_s is None:
-        return
-
-    # -------------------------
     # STEP 3: METADATA INPUT
     # -------------------------
     metadata_df = collect_metadata(root, file_map, save_folder)
@@ -3101,22 +3213,31 @@ def run_gui():
     mouse_col, sex_col, group_col = metadata_columns[:3]
 
     # -------------------------
-    # STEP 4: PLOT DISPLAY AND COLOURS
+    # ANALYSIS AND PLOT SETTINGS
     # -------------------------
-    show_plots = messagebox.askyesno(
-        "Plot Display",
-        "Display plots?\n\nYes = show plots\nNo = save only",
-    )
-    use_custom_colors = messagebox.askyesno(
-        "Plot Colours",
-        "Would you like to choose custom colours for Sex and Genotype groups?",
-    )
-    color_maps = configure_plot_colors(
-        metadata_df,
-        group_col,
-        sex_col,
-        use_custom_colors,
-    )
+
+    # Remove wheel bindings left by the separate metadata window.
+    for sequence in ["<MouseWheel>", "<Button-4>", "<Button-5>"]:
+        root.unbind_all(sequence)
+    settings = collect_analysis_settings(root, "StopSig", metadata_df, sex_col, group_col)
+    if settings is None:
+        root.destroy()
+        return
+    use_phase = settings["use_phase"]
+    light_start = settings["light_start"]
+    light_end = settings["light_end"]
+    show_plots = settings["show_plots"]
+
+    rolling_window = settings["rolling_window"]
+    peri_window = settings["peri_window"]
+    regular_omission_timeout_s = settings["regular_omission_timeout_s"]
+    stop_error_noise_s = settings["stop_error_noise_s"]
+    stop_error_timeout_s = settings["stop_error_timeout_s"]
+    stop_signal_delay_ms = settings["stop_signal_delay_ms"]
+    response_window_s = settings["response_window_s"]
+    color_maps = configure_plot_colors(metadata_df, group_col, sex_col, False)
+    for field, colors in settings["colors"].items():
+        color_maps[field].update(colors)
 
     # -------------------------
     # STEP 5: READ, CLEAN, AND PROCESS INDIVIDUAL FILES
@@ -3360,25 +3481,27 @@ def run_gui():
     # -------------------------
     # STEP 8: GRAPH GENERATION
     # -------------------------
-    plot_folder = os.path.join(save_folder, "StopSig_Plots")
-    create_plots(
-        trials_all_df,
-        summary_df,
-        phase_summary_df,
-        peri_stop_df,
-        pca_results,
-        phase_pca_scores_df,
-        plot_folder,
-        mouse_col,
-        sex_col,
-        group_col,
-        use_phase,
-        color_maps,
-        show_plots,
-    )
-
     print(f"\nStopSig workbook saved:\n{output_path}")
-    print(f"StopSig plots saved:\n{plot_folder}")
+    if settings["create_graphs"]:
+        plot_folder = os.path.join(save_folder, "StopSig_Plots")
+        create_plots(
+            trials_all_df,
+            summary_df,
+            phase_summary_df,
+            peri_stop_df,
+            pca_results,
+            phase_pca_scores_df,
+            plot_folder,
+            mouse_col,
+            sex_col,
+            group_col,
+            use_phase,
+            color_maps,
+            show_plots,
+        )
+
+        print(f"StopSig plots saved:\n{plot_folder}")
+
 
     if errors:
         error_path = os.path.join(save_folder, "StopSig_processing_errors.txt")
